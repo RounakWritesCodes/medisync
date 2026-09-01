@@ -33,13 +33,11 @@ export default function Loading() {
           Loading...
         </p>
 
-        <style jsx>{`
+        <style dangerouslySetInnerHTML={{ __html: `
           @keyframes spin {
-            to {
-              transform: rotate(360deg);
-            }
+            to { transform: rotate(360deg); }
           }
-        `}</style>
+        `}} />
       </div>
     </div>
   );

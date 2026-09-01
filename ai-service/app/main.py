@@ -55,6 +55,26 @@ _whisper_model = None
 _whisper_model_name: str = ""
 
 
+@app.on_event("startup")
+def _preload_whisper():
+    """Download and cache the Whisper model at startup so the first request
+    doesn't have to wait for a ~74MB download."""
+    global _whisper_model, _whisper_model_name
+    model_size = os.environ.get("WHISPER_MODEL", "base")
+    try:
+        from faster_whisper import WhisperModel
+        _whisper_model = WhisperModel(
+            model_size,
+            device="cpu",
+            compute_type="int8",
+            num_workers=min(os.cpu_count() or 2, 4),
+        )
+        _whisper_model_name = model_size
+        print(f"[startup] Whisper model '{model_size}' preloaded successfully")
+    except Exception as e:
+        print(f"[startup] Whisper preloading failed (will retry on first request): {e}")
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -138,46 +158,41 @@ async def speech_to_text(audio: UploadFile = File(...)):
 
 
 def _preprocess_audio(input_path: str) -> str:
-    """Use ffmpeg to normalize audio and convert to 16kHz mono WAV.
+    """Use ffmpeg to convert audio to 16kHz mono WAV for Whisper.
 
-    This dramatically improves Whisper accuracy:
-    - Loudness normalization prevents quiet speech from being missed
-    - 16kHz mono is Whisper's native format (no resampling artifacts)
-    - WAV avoids lossy codec double-encoding
+    Stripped the expensive loudnorm two-pass filter — Whisper handles
+    volume variations well on its own. Only does fast format conversion.
     """
     output_path = input_path + "_preprocessed.wav"
     try:
         result = subprocess.run(
             [
                 "ffmpeg", "-y", "-i", input_path,
-                # Normalize audio volume (loudnorm filter)
-                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,highpass=f=80,lowpass=f=8000",
-                # Convert to 16kHz mono WAV (Whisper native format)
+                # Fast: just convert to 16kHz mono WAV (Whisper native format)
                 "-ar", "16000",
                 "-ac", "1",
                 "-c:a", "pcm_s16le",
                 output_path,
             ],
             capture_output=True,
-            timeout=30,
+            timeout=10,
         )
         if result.returncode == 0 and os.path.exists(output_path):
             return output_path
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-    # If ffmpeg fails, return original file
     return input_path
 
 
 def _transcribe_with_whisper(audio_path: str) -> str:
-    """Transcribe audio using faster-whisper with enhanced settings.
+    """Transcribe audio using faster-whisper with speed-optimized settings.
 
-    Upgrades from basic setup:
-    - base model (74M params) instead of tiny (39M) — ~2x better accuracy
-    - beam_size=5 (search more hypotheses) instead of greedy (1)
-    - language='en' hint — skips language detection, avoids wrong-language
-    - initial_prompt with medical terms — primes the model for healthcare vocabulary
-    - VAD filter — removes silence/noise before transcription
+    Optimizations:
+    - beam_size=3 (down from 5) — still good accuracy, ~40% faster
+    - best_of=1 — beam search already finds the best path
+    - Single temperature — no multi-pass retry
+    - Shorter medical prompt — enough context without bloating
+    - VAD filter — removes silence to skip processing empty audio
     """
     try:
         from faster_whisper import WhisperModel
@@ -191,40 +206,32 @@ def _transcribe_with_whisper(audio_path: str) -> str:
                 model_size,
                 device="cpu",
                 compute_type="int8",
-                # Use all CPU threads for faster inference
                 num_workers=min(os.cpu_count() or 2, 4),
             )
             _whisper_model_name = model_size
 
-        # Medical context prompt — primes the model for healthcare vocabulary
+        # Short medical context prompt — primes vocabulary without bloat
         medical_prompt = (
-            "Patient presents with headache, fever, cough, chest pain, "
-            "shortness of breath, nausea, vomiting, dizziness, fatigue, "
-            "abdominal pain, back pain, joint pain, muscle pain, sore throat, "
-            "runny nose, diarrhea, bloating, rash, swelling, numbness, "
-            "blurred vision, weight loss, night sweats, chills, weakness. "
-            "Medical terms: hypertension, diabetes, asthma, pneumonia, "
-            "bronchitis, migraine, arthritis, anemia, infection, inflammation."
+            "Patient has headache, fever, cough, chest pain, "
+            "nausea, vomiting, dizziness, fatigue, abdominal pain, "
+            "sore throat, runny nose, diarrhea, rash, swelling."
         )
 
         segments, info = _whisper_model.transcribe(
             audio_path,
-            # Core accuracy improvements
-            beam_size=5,
+            beam_size=3,
             language="en",
             initial_prompt=medical_prompt,
-            # Quality settings
-            best_of=5,             # Sample 5 times, pick best
-            temperature=(0.0, 0.2, 0.4),  # Low temperature = more deterministic
+            best_of=1,
+            temperature=0.0,
             compression_ratio_threshold=2.4,
             log_prob_threshold=-1.0,
             no_speech_threshold=0.6,
-            # VAD filter — removes silence and noise
             vad_filter=True,
             vad_parameters=dict(
-                min_silence_duration_ms=500,
-                speech_pad_ms=200,
-                threshold=0.35,
+                min_silence_duration_ms=300,
+                speech_pad_ms=150,
+                threshold=0.4,
             ),
         )
 

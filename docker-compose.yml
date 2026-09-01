@@ -83,7 +83,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-dev-secret-change-in-production-32chars!}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       APP_URL: ${APP_URL:-http://localhost:3000}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000,http://localhost:3002}
       API_PORT: "3001"
       NODE_ENV: ${NODE_ENV:-development}
       AI_BASE_URL: ${AI_BASE_URL:-http://ai-service:8000}
@@ -122,7 +122,7 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
     ports:
-      - "3000:3000"
+      - "3002:3000"
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       HOSTNAME: "0.0.0.0"

@@ -24,7 +24,7 @@ export async function buildApp() {
     origin: config.corsOrigin,
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "POST", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "Cookie", "Accept"],
   });
 
   await app.register(cookie);

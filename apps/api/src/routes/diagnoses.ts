@@ -398,7 +398,7 @@ export async function diagnosesRoutes(app: FastifyInstance) {
             "Content-Type": `multipart/form-data; boundary=${boundary}`,
           },
           body,
-          signal: AbortSignal.timeout(120_000),
+          signal: AbortSignal.timeout(60_000),
         });
 
         if (!aiRes.ok) {

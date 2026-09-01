@@ -1,12 +1,17 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 async function request(path: string, options: RequestInit = {}) {
+  // Don't set Content-Type for requests without a body (DELETE, GET)
+  const hasBody = options.body && options.method !== "GET" && options.method !== "HEAD";
+  const headers: Record<string, string> = { ...options.headers as Record<string, string> };
+  if (hasBody && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
   const res = await fetch(`${BASE}${path}`, {
-    // Auth/permission answers must never come from the browser cache —
-    // a stale /api/auth/me made freshly-verified accounts still look pending.
     cache: "no-store",
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...options.headers },
+    headers,
     ...options,
   });
   const data = await res.json();
