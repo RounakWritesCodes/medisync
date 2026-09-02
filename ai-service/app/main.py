@@ -81,7 +81,7 @@ def health():
         "status": "ok",
         "service": "MediSync AI Service",
         "version": "1.0.0",
-        "engine": "deterministic_symptom_ranking",
+        "engine": "bayesian_probability_engine",
     }
 
 
@@ -550,7 +550,7 @@ def diagnose(request: DiagnosisRequest):
 
     response = {
         "symptoms": symptoms,
-        "extraction_source": "deterministic_symptom_ranking",
+        "extraction_source": "bayesian_probability_engine",
         "possible_conditions": detailed_conditions,
         "clinical_summary": clinical_summary,
         "diagnostic_overview": diagnostic_overview,
@@ -564,7 +564,9 @@ def diagnose(request: DiagnosisRequest):
         "disclaimer": (
             "This system provides informational "
             "decision support and is not a "
-            "medical diagnosis."
+            "medical diagnosis. Probabilities shown "
+            "are statistical estimates based on symptom "
+            "patterns and disease prevalence data."
         ),
     }
 

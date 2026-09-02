@@ -1,16 +1,18 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import PatientInfoForm from '@/components/forms/PatientInfoForm'
 import SymptomsForm from '@/components/forms/SymptomsForm'
 import ConditionsForm from '@/components/forms/ConditionsForm'
 import { api } from '@/lib/api'
-import { ClipboardList, ArrowLeft, ArrowRight, Sparkles } from 'lucide-react'
+import { useActiveProfile, getRelationshipLabel } from '@/contexts/ActiveProfileContext'
+import { ClipboardList, ArrowLeft, ArrowRight, Sparkles, AlertCircle, User } from 'lucide-react'
 import type { PatientInfo, DiagnosticInput } from '@medisync/shared'
 
 export default function DiagnosePage() {
   const router = useRouter()
+  const { activeProfile, profiles } = useActiveProfile()
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -22,6 +24,22 @@ export default function DiagnosePage() {
   const [duration, setDuration] = useState('')
   const [severity, setSeverity] = useState<'mild' | 'moderate' | 'severe'>('mild')
   const [conditions, setConditions] = useState<string[]>([])
+
+  // Auto-fill patient info from active profile
+  useEffect(() => {
+    if (activeProfile) {
+      const bioSex = (activeProfile.biologicalSex || activeProfile.biological_sex || 'MALE') as string
+      setPatientInfo({
+        name: activeProfile.fullName || activeProfile.full_name || '',
+        age: activeProfile.age,
+        gender: bioSex.toLowerCase() === 'male' ? 'male' : 'female',
+        weight: undefined,
+        height: undefined,
+        allergies: activeProfile.allergies || [],
+        currentMedications: [],
+      })
+    }
+  }, [activeProfile])
 
   const validateStep1 = () => {
     const newErrors: Record<string, string> = {}
@@ -45,8 +63,9 @@ export default function DiagnosePage() {
 
   const handleSubmit = async () => {
     setLoading(true)
-    const input: DiagnosticInput = {
+    const input: DiagnosticInput & { profile_id?: string } = {
       patientInfo, symptoms, existingConditions: conditions, symptomDuration: duration, severity,
+      ...(activeProfile ? { profile_id: activeProfile.id } : {}),
     }
 
     try {
@@ -68,9 +87,53 @@ export default function DiagnosePage() {
           Symptom Checker
         </h1>
         <p style={{ fontSize: '15px', color: 'var(--color-on-surface-variant)' }}>
-          Step {step} of 3 — {step === 1 ? 'Your Information' : step === 2 ? 'Symptoms' : 'Medical History'}
+          Step {step} of 3 — {step === 1 ? 'Patient Information' : step === 2 ? 'Symptoms' : 'Medical History'}
         </p>
       </div>
+
+      {/* Profile Banner */}
+      {activeProfile && (
+        <div
+          className="glass-card animate-fade-in flex items-center gap-4"
+          style={{ animationDelay: '0.05s', padding: '16px 20px', marginBottom: '24px' }}
+        >
+          <div
+            className="flex items-center justify-center rounded-full flex-shrink-0"
+            style={{
+              width: 44,
+              height: 44,
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            }}
+          >
+            <span className="text-white font-semibold" style={{ fontSize: 18 }}>
+              {(activeProfile.fullName || activeProfile.full_name || 'U').charAt(0).toUpperCase()}
+            </span>
+          </div>
+          <div className="flex-1">
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-on-surface)' }}>
+              Diagnosing for: {activeProfile.fullName || activeProfile.full_name || 'Unknown'}, {activeProfile.age} yrs
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--color-on-surface-variant)' }}>
+              {getRelationshipLabel(activeProfile.relationship)} profile
+              {profiles.length > 1 && ' — Switch profile in sidebar if needed'}
+            </div>
+          </div>
+          {activeProfile.relationship !== 'SELF' && (
+            <div
+              className="flex items-center gap-1 px-2 py-1 rounded-lg"
+              style={{
+                background: 'var(--color-primary-container)',
+                color: 'var(--color-primary)',
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              <User size={12} />
+              {getRelationshipLabel(activeProfile.relationship)}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="progress-bar animate-fade-in" style={{ animationDelay: '0.1s', marginBottom: '32px' }}>
         <div className="progress-fill" style={{ width: `${(step / 3) * 100}%` }}></div>

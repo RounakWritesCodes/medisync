@@ -24,6 +24,36 @@ export interface Profile {
   updated_at: string;
 }
 
+// ===== Patient Profiles (Multi-Profile / Guardian-Dependent) =====
+
+export type Relationship = 'SELF' | 'CHILD' | 'PARENT' | 'SPOUSE' | 'OTHER';
+export type BiologicalSex = 'MALE' | 'FEMALE' | 'INTERSEX';
+
+export interface PatientProfile {
+  id: string;
+  guardian_user_id: string;
+  guardianUserId: string;
+  full_name: string;
+  fullName: string;
+  relationship: Relationship;
+  date_of_birth: string;
+  dateOfBirth: string;
+  biological_sex: BiologicalSex;
+  biologicalSex: BiologicalSex;
+  blood_group?: string | null;
+  bloodGroup?: string | null;
+  allergies?: string[];
+  avatar_url?: string | null;
+  avatarUrl?: string | null;
+  is_default: number;
+  isDefault: number;
+  age: number; // Calculated from date_of_birth
+  created_at: string;
+  createdAt: string;
+  updated_at: string;
+  updatedAt: string;
+}
+
 // ===== AI Diagnostic Types =====
 
 export interface PatientInfo {
@@ -87,6 +117,18 @@ export interface ConditionDetail {
   unexplained_features: string[];
   management_information: string[];
   condition_specific_medication_information: string[];
+  // Bayesian probability fields
+  probability?: number;
+  probability_percent?: number;
+  confidence?: 'high' | 'moderate' | 'low' | 'very_low';
+  _probability_details?: {
+    prior: number;
+    core_coverage: number;
+    total_coverage: number;
+    age_factor: number;
+    sex_factor: number;
+    duration_factor: number;
+  };
 }
 
 export interface DiagnosticOverview {
@@ -153,17 +195,23 @@ export type RecordType =
 
 export interface MedicalRecord {
   id: string;
-  patient_id: string;
+  patientId: string;
   type: RecordType;
   date: string;
-  doctor_name: string | null;
-  hospital_name: string | null;
+  doctorName: string | null;
+  hospitalName: string | null;
   details: Record<string, unknown>;
-  attachment_url: string | null;
-  content_type: string | null;
-  file_size: number | null;
-  created_at: string;
-  updated_at: string;
+  attachmentUrl: string | null;
+  contentType: string | null;
+  fileSize: number | null;
+  createdAt: string;
+  updatedAt: string;
+  profile_id?: string | null;
+  profileId?: string | null;
+  profile_name?: string | null;
+  profileName?: string | null;
+  profile_relationship?: string | null;
+  profileRelationship?: string | null;
 }
 
 // ===== Access Requests =====
@@ -199,9 +247,13 @@ export interface AccessRequest {
 
 export interface AccessRequestWithUser extends AccessRequest {
   doctor_name?: string;
+  doctorName?: string;
   doctor_email?: string;
+  doctorEmail?: string;
   patient_name?: string;
+  patientName?: string;
   patient_email?: string;
+  patientEmail?: string;
   effectively_expired?: boolean;
 }
 
@@ -225,7 +277,7 @@ export interface DoctorVerification {
 
 // ===== Emergency Access =====
 
-export type EmergencyAccessStatus = 'active' | 'revoked' | 'expired';
+export type EmergencyAccessStatus = 'pending' | 'active' | 'denied' | 'revoked' | 'expired';
 
 export type EmergencyAccessReasonCode =
   | 'cardiac_arrest'

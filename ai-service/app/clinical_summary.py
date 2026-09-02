@@ -122,21 +122,33 @@ def build_clinical_summary(
             "the highest-ranked condition",
         )
 
-        top_label = top.get(
-            "relevance_label",
-            "ranked",
-        )
-
+        top_probability = top.get("probability")
+        top_confidence = top.get("confidence")
         top_matches = top.get(
             "matched_symptoms",
             [],
         )
 
-        sentence = (
-            f"The highest-ranked current "
-            f"differential is {top_name} "
-            f"with {top_label} symptom relevance"
-        )
+        # Build sentence with probability percentage
+        if top_probability is not None:
+            prob_percent = round(top_probability * 100, 1)
+            sentence = (
+                f"The highest-ranked current "
+                f"differential is {top_name} "
+                f"with a {prob_percent}% probability"
+            )
+            if top_confidence:
+                sentence += f" ({top_confidence} confidence)"
+        else:
+            top_label = top.get(
+                "relevance_label",
+                "ranked",
+            )
+            sentence = (
+                f"The highest-ranked current "
+                f"differential is {top_name} "
+                f"with {top_label} symptom relevance"
+            )
 
         if top_matches:
             sentence += (
@@ -167,11 +179,28 @@ def build_clinical_summary(
                     + "."
                 )
 
-        parts.append(
-            "These rankings represent symptom "
-            "relevance, not diagnostic "
-            "probabilities or confirmed diagnoses."
-        )
+        # Include probability information if available
+        top_probability = top.get("probability")
+        top_confidence = top.get("confidence")
+
+        if top_probability is not None and top_confidence is not None:
+            prob_percent = round(top_probability * 100, 1)
+            parts.append(
+                f"The Bayesian probability estimate for {top_name} "
+                f"is {prob_percent}% (confidence: {top_confidence})."
+            )
+            parts.append(
+                "These probabilities represent statistical likelihood "
+                "based on symptom patterns, demographic factors, and "
+                "disease prevalence data. They are decision support "
+                "information, not confirmed diagnoses."
+            )
+        else:
+            parts.append(
+                "These rankings represent symptom "
+                "relevance, not diagnostic "
+                "probabilities or confirmed diagnoses."
+            )
 
     else:
 

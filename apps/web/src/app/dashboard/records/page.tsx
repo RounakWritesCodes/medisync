@@ -7,6 +7,7 @@ import { api } from '@/lib/api'
 import { FolderOpen, Plus, FileText, ArrowRight, Pill, FlaskConical, ScanLine } from 'lucide-react'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 import EmptyState from '@/components/EmptyState'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import type { MedicalRecord } from '@medisync/shared'
 
 export default function RecordsPage() {
@@ -14,6 +15,8 @@ export default function RecordsPage() {
   const [records, setRecords] = useState<MedicalRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [filterPatient, setFilterPatient] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<MedicalRecord | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const fetchRecords = async () => {
@@ -39,15 +42,23 @@ export default function RecordsPage() {
     ? (anyField(sharedFrom, 'patient_name', 'patient_name') || anyField(sharedFrom, 'patient_email', 'patient_email') || null)
     : null
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this record?')) return
-    await api.deleteRecord(id)
-    setRecords(records.filter(r => r.id !== id))
+  const handleDelete = (record: MedicalRecord) => {
+    setDeleteTarget(record)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    await api.deleteRecord(deleteTarget.id)
+    setRecords(records.filter(r => r.id !== deleteTarget.id))
+    setDeleteTarget(null)
+    setDeleting(false)
   }
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner size="lg" text="Loading records..." /></div>
 
   return (
+    <>
     <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
       <div className="flex justify-between items-center animate-fade-in" style={{ marginBottom: '32px' }}>
         <div>
@@ -89,10 +100,10 @@ export default function RecordsPage() {
               onMouseLeave={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none' }}
             >
               <div style={{ marginBottom: '16px' }}>
-                {record.attachment_url ? (
+                {record.attachmentUrl ? (
                   <div style={{ borderRadius: '12px', overflow: 'hidden', height: '160px', background: 'var(--color-surface-highest)' }}>
-                    {record.content_type?.startsWith('image/') ? (
-                      <img src={record.attachment_url} alt="Prescription" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    {record.contentType?.startsWith('image/') ? (
+                      <img src={record.attachmentUrl} alt="Prescription" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     ) : (
                       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <FileText size={48} style={{ color: 'var(--color-primary)' }} />
@@ -106,11 +117,28 @@ export default function RecordsPage() {
                 )}
               </div>
               <div className="flex justify-between items-start" style={{ marginBottom: '8px' }}>
-                <span className="badge badge-active" style={{ textTransform: 'capitalize' }}>{record.type.replace('_', ' ')}</span>
+                <div className="flex items-center" style={{ gap: '8px' }}>
+                  <span className="badge badge-active" style={{ textTransform: 'capitalize' }}>{record.type.replace('_', ' ')}</span>
+                  {(record.profileName || record.profile_name) && (
+                    <span style={{
+                      fontSize: '11px',
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      background: (record.profileRelationship || record.profile_relationship) === 'SELF' ? 'var(--color-primary-container)' : 'var(--color-secondary-container)',
+                      color: (record.profileRelationship || record.profile_relationship) === 'SELF' ? 'var(--color-primary)' : 'var(--color-secondary)',
+                      fontWeight: 500,
+                    }}>
+                      {record.profileName || record.profile_name}
+                      {(record.profileRelationship || record.profile_relationship) && (record.profileRelationship || record.profile_relationship) !== 'SELF' && (
+                        <span style={{ marginLeft: '4px', opacity: 0.7 }}>({record.profileRelationship || record.profile_relationship})</span>
+                      )}
+                    </span>
+                  )}
+                </div>
               </div>
               <p style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px' }}>{record.date}</p>
-              <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)' }}>{record.doctor_name || 'No doctor specified'}</p>
-              <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)' }}>{record.hospital_name || ''}</p>
+              <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)' }}>{record.doctorName || 'No doctor specified'}</p>
+              <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)' }}>{record.hospitalName || ''}</p>
               {anyField(record, 'owner', 'owner') === false && (
                 <p style={{ fontSize: '11px', color: 'var(--color-primary)', fontWeight: 600, marginTop: '4px' }}>
                   Shared by patient{anyField(record, 'patient_email', 'patient_email') ? ` (${anyField(record, 'patient_email', 'patient_email')})` : ''}
@@ -118,7 +146,7 @@ export default function RecordsPage() {
               )}
               <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--color-outline-variant)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 {anyField(record, 'owner', 'owner') !== false && (
-                  <button onClick={(e) => { e.stopPropagation(); handleDelete(record.id) }} style={{ fontSize: '12px', color: '#b71c1c', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500 }}>Delete</button>
+                  <button onClick={(e) => { e.stopPropagation(); handleDelete(record) }} style={{ fontSize: '12px', color: '#b71c1c', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500 }}>Delete</button>
                 )}
                 <ArrowRight size={16} style={{ color: 'var(--color-on-surface-variant)' }} />
               </div>
@@ -127,5 +155,15 @@ export default function RecordsPage() {
         </div>
       )}
     </div>
+
+    <ConfirmDialog
+      open={!!deleteTarget}
+      title="Delete Record"
+      message={`Are you sure you want to delete this ${deleteTarget?.type?.replace('_', ' ')} record from ${deleteTarget?.date}? This action cannot be undone.`}
+      confirmLabel={deleting ? 'Deleting...' : 'Delete'}
+      onConfirm={confirmDelete}
+      onCancel={() => { if (!deleting) setDeleteTarget(null) }}
+    />
+    </>
   )
 }

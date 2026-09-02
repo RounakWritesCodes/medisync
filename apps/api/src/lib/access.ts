@@ -44,9 +44,9 @@ function normalizeScope(raw: unknown): RecordScope {
 export async function getActiveGrant(
   doctorId: string,
   patientId: string
-): Promise<{ scope: RecordScope; expiresAt: Date } | null> {
+): Promise<{ scope: RecordScope; expiresAt: Date; profileIds: string[] } | null> {
   const [grant] = await db
-    .select({ grantedScope: accessRequests.grantedScope, expiresAt: accessRequests.expiresAt })
+    .select({ grantedScope: accessRequests.grantedScope, expiresAt: accessRequests.expiresAt, profileIds: accessRequests.profileIds })
     .from(accessRequests)
     .where(
       and(
@@ -61,7 +61,8 @@ export async function getActiveGrant(
 
   if (!grant) return null;
   // Grants approved before scoped-grant columns existed fall back to requested scope.
-  return { scope: normalizeScope(grant.grantedScope ?? {}), expiresAt: grant.expiresAt! };
+  const pids = Array.isArray(grant.profileIds) ? (grant.profileIds as string[]) : [];
+  return { scope: normalizeScope(grant.grantedScope ?? {}), expiresAt: grant.expiresAt!, profileIds: pids };
 }
 
 /** Active guardianship link between a specific guardian and patient, if any. */
@@ -162,9 +163,9 @@ export async function guardedPatientIds(userId: string): Promise<string[]> {
 }
 
 /** Batch variant: unexpired approved grants held by a doctor. */
-export async function grantedPatientIds(doctorId: string): Promise<Map<string, RecordScope>> {
+export async function grantedPatientIds(doctorId: string): Promise<Map<string, { scope: RecordScope; profileIds: string[] }>> {
   const rows = await db
-    .select({ patientId: accessRequests.patientId, grantedScope: accessRequests.grantedScope, expiresAt: accessRequests.expiresAt })
+    .select({ patientId: accessRequests.patientId, grantedScope: accessRequests.grantedScope, expiresAt: accessRequests.expiresAt, profileIds: accessRequests.profileIds })
     .from(accessRequests)
     .where(
       and(
@@ -173,7 +174,10 @@ export async function grantedPatientIds(doctorId: string): Promise<Map<string, R
         gt(accessRequests.expiresAt, new Date())
       )
     );
-  const map = new Map<string, RecordScope>();
-  for (const r of rows) map.set(r.patientId, normalizeScope(r.grantedScope ?? {}));
+  const map = new Map<string, { scope: RecordScope; profileIds: string[] }>();
+  for (const r of rows) {
+    const pids = Array.isArray(r.profileIds) ? (r.profileIds as string[]) : [];
+    map.set(r.patientId, { scope: normalizeScope(r.grantedScope ?? {}), profileIds: pids });
+  }
   return map;
 }

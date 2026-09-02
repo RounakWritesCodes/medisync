@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import { ArrowLeft, Trash2, Image, FileText } from 'lucide-react'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
 import type { MedicalRecord } from '@medisync/shared'
 
 export default function RecordDetailPage() {
@@ -14,6 +15,8 @@ export default function RecordDetailPage() {
   const id = params.id as string
   const [record, setRecord] = useState<MedicalRecord | null>(null)
   const [loading, setLoading] = useState(true)
+  const [showDelete, setShowDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const fetchRecord = async () => {
@@ -29,7 +32,7 @@ export default function RecordDetailPage() {
   }, [id, router])
 
   const handleDelete = async () => {
-    if (!confirm('Delete this record?')) return
+    setDeleting(true)
     await api.deleteRecord(id)
     router.push('/dashboard/records')
   }
@@ -38,6 +41,7 @@ export default function RecordDetailPage() {
   if (!record) return null
 
   return (
+    <>
     <div style={{ maxWidth: '900px', margin: '0 auto' }}>
       <div style={{ marginBottom: '32px' }} className="animate-fade-in">
         <Link href="/dashboard/records" className="inline-flex items-center gap-1" style={{ fontSize: '14px', color: 'var(--color-primary)', textDecoration: 'none', marginBottom: '16px', fontWeight: 500 }}>
@@ -48,26 +52,26 @@ export default function RecordDetailPage() {
             <h1 style={{ fontSize: '32px', fontWeight: 700, marginBottom: '8px', textTransform: 'capitalize' }}>{record.type.replace('_', ' ')}</h1>
             <p style={{ fontSize: '15px', color: 'var(--color-on-surface-variant)' }}>{record.date}</p>
           </div>
-          <button onClick={handleDelete} className="btn-danger" style={{ padding: '10px 20px', fontSize: '13px' }}>
+          <button onClick={() => setShowDelete(true)} className="btn-danger" style={{ padding: '10px 20px', fontSize: '13px' }}>
             <Trash2 size={16} /> Delete
           </button>
         </div>
       </div>
 
-      {record.attachment_url && (
+      {record.attachmentUrl && (
         <div className="glass-card animate-fade-in" style={{ padding: '24px', marginBottom: '24px' }}>
           <div className="flex items-center gap-2" style={{ marginBottom: '16px' }}>
             <Image size={22} style={{ color: 'var(--color-primary)' }} />
             <h2 style={{ fontSize: '18px', fontWeight: 600 }}>
-              {record.content_type?.startsWith('image/') ? 'Prescription Photo' : 'Attached Document'}
+              {record.contentType?.startsWith('image/') ? 'Prescription Photo' : 'Attached Document'}
             </h2>
           </div>
-          {record.content_type?.startsWith('image/') ? (
+          {record.contentType?.startsWith('image/') ? (
             <div style={{ borderRadius: '16px', overflow: 'hidden', border: '1px solid var(--color-outline-variant)' }}>
-              <img src={record.attachment_url} alt="Prescription" style={{ width: '100%', maxHeight: '600px', objectFit: 'contain', background: 'white', cursor: 'zoom-in' }} onClick={() => window.open(record.attachment_url!, '_blank')} />
+              <img src={record.attachmentUrl} alt="Prescription" style={{ width: '100%', maxHeight: '600px', objectFit: 'contain', background: 'white', cursor: 'zoom-in' }} onClick={() => window.open(record.attachmentUrl!, '_blank')} />
             </div>
           ) : (
-            <a href={record.attachment_url} target="_blank" rel="noopener noreferrer" className="glass-card" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px', textDecoration: 'none', color: 'inherit' }}>
+            <a href={record.attachmentUrl} target="_blank" rel="noopener noreferrer" className="glass-card" style={{ padding: '24px', display: 'flex', alignItems: 'center', gap: '16px', textDecoration: 'none', color: 'inherit' }}>
               <FileText size={48} style={{ color: 'var(--color-primary)' }} />
               <div>
                 <p style={{ fontWeight: 600 }}>View Document</p>
@@ -76,18 +80,18 @@ export default function RecordDetailPage() {
             </a>
           )}
           <p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginTop: '12px' }}>
-            {record.file_size ? `File size: ${(record.file_size / 1024).toFixed(1)} KB` : ''}
-            {record.content_type ? ` • Type: ${record.content_type}` : ''}
+            {record.fileSize ? `File size: ${(record.fileSize / 1024).toFixed(1)} KB` : ''}
+            {record.contentType ? ` • Type: ${record.contentType}` : ''}
           </p>
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: record.attachment_url ? '1fr' : '1fr 1fr', gap: '20px' }} className="animate-fade-in">
+      <div style={{ display: 'grid', gridTemplateColumns: record.attachmentUrl ? '1fr' : '1fr 1fr', gap: '20px' }} className="animate-fade-in">
         <div className="glass-card" style={{ padding: '24px' }}>
           <h3 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--color-on-surface-variant)', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Details</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div><p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginBottom: '4px' }}>Doctor</p><p style={{ fontSize: '15px', fontWeight: 600 }}>{record.doctor_name || '—'}</p></div>
-            <div><p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginBottom: '4px' }}>Hospital</p><p style={{ fontSize: '15px', fontWeight: 600 }}>{record.hospital_name || '—'}</p></div>
+            <div><p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginBottom: '4px' }}>Doctor</p><p style={{ fontSize: '15px', fontWeight: 600 }}>{record.doctorName || '—'}</p></div>
+            <div><p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginBottom: '4px' }}>Hospital</p><p style={{ fontSize: '15px', fontWeight: 600 }}>{record.hospitalName || '—'}</p></div>
             <div><p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginBottom: '4px' }}>Record Type</p><p style={{ fontSize: '15px', fontWeight: 600, textTransform: 'capitalize' }}>{record.type.replace('_', ' ')}</p></div>
           </div>
         </div>
@@ -106,5 +110,15 @@ export default function RecordDetailPage() {
         )}
       </div>
     </div>
+
+    <ConfirmDialog
+      open={showDelete}
+      title="Delete Record"
+      message={`Are you sure you want to delete this ${record?.type?.replace('_', ' ')} record from ${record?.date}? This action cannot be undone.`}
+      confirmLabel={deleting ? 'Deleting...' : 'Delete'}
+      onConfirm={handleDelete}
+      onCancel={() => { if (!deleting) setShowDelete(false) }}
+    />
+    </>
   )
 }

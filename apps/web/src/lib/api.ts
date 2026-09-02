@@ -1,4 +1,4 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const BASE = "" // same-origin: requests go through Next.js rewrites to the API
 
 async function request(path: string, options: RequestInit = {}) {
   // Don't set Content-Type for requests without a body (DELETE, GET)
@@ -100,6 +100,9 @@ export const api = {
       body: JSON.stringify({ status, ...options }),
     }).then((d) => d.accessRequest),
 
+  deleteAccessRequest: (id: string) =>
+    request(`/api/access-requests/${id}`, { method: "DELETE" }),
+
   // Emergency Access
   getEmergencyAccess: () => request("/api/emergency-access").then((d) => d.emergencyAccess),
 
@@ -109,6 +112,9 @@ export const api = {
   updateEmergencyAccess: (id: string, status: string) =>
     request(`/api/emergency-access/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }).then((d) => d.emergencyAccess),
 
+  deleteEmergencyAccess: (id: string) =>
+    request(`/api/emergency-access/${id}`, { method: "DELETE" }),
+
   // Guardian Links
   getGuardianLinks: () => request("/api/guardian-links").then((d) => d.guardianLinks),
 
@@ -117,6 +123,23 @@ export const api = {
 
   updateGuardianLink: (id: string, status: string) =>
     request(`/api/guardian-links/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }).then((d) => d.guardianLink),
+
+  // Patient Profiles (Multi-Profile / Guardian-Dependent)
+  getProfiles: () => request("/api/profiles"),
+
+  getProfile: (id: string) => request(`/api/profiles/${id}`),
+
+  createProfile: (data: Record<string, unknown>) =>
+    request("/api/profiles", { method: "POST", body: JSON.stringify(data) }),
+
+  updateProfile: (id: string, data: Record<string, unknown>) =>
+    request(`/api/profiles/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+
+  setDefaultProfile: (id: string) =>
+    request(`/api/profiles/${id}/set-default`, { method: "PATCH" }),
+
+  deleteProfile: (id: string) =>
+    request(`/api/profiles/${id}`, { method: "DELETE" }),
 
   // Doctor Credential Verification (admin review — D1)
   getVerifications: () => request("/api/admin/verifications").then((d) => d.verifications),

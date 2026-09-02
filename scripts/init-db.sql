@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Profiles table
+-- Profiles table (user profile, not patient profile)
 CREATE TABLE IF NOT EXISTS profiles (
   id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   username TEXT,
@@ -23,10 +23,32 @@ CREATE TABLE IF NOT EXISTS profiles (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Patient profiles table (multi-profile / guardian-dependent architecture)
+CREATE TABLE IF NOT EXISTS patient_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  guardian_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  full_name TEXT NOT NULL,
+  relationship TEXT NOT NULL DEFAULT 'SELF',
+  date_of_birth DATE NOT NULL,
+  biological_sex TEXT NOT NULL,
+  blood_group TEXT,
+  allergies JSONB DEFAULT '[]'::jsonb,
+  avatar_url TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Unique index: one default profile per guardian
+CREATE UNIQUE INDEX IF NOT EXISTS one_default_profile_per_guardian
+  ON patient_profiles (guardian_user_id)
+  WHERE is_default = 1;
+
 -- Diagnoses table
 CREATE TABLE IF NOT EXISTS diagnoses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id TEXT NOT NULL,
+  profile_id UUID REFERENCES patient_profiles(id) ON DELETE SET NULL,
   patient_name TEXT NOT NULL,
   age INTEGER NOT NULL,
   gender TEXT NOT NULL,
@@ -46,6 +68,7 @@ CREATE TABLE IF NOT EXISTS diagnoses (
 CREATE TABLE IF NOT EXISTS records (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   patient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  profile_id UUID REFERENCES patient_profiles(id) ON DELETE SET NULL,
   type TEXT NOT NULL,
   date DATE NOT NULL,
   doctor_name TEXT,
@@ -73,6 +96,7 @@ CREATE TABLE IF NOT EXISTS access_requests (
   responded_by UUID,
   responded_at TIMESTAMPTZ,
   expires_at TIMESTAMPTZ,
+  profile_ids JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -94,24 +118,6 @@ CREATE TABLE IF NOT EXISTS emergency_access (
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
--- Guardian links table
-CREATE TABLE IF NOT EXISTS guardian_links (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  patient_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  guardian_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  trigger_type TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending_guardian',
-  scope TEXT NOT NULL DEFAULT 'records',
-  authority_document_ref TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Unique index: one active guardian per patient
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_guardian_per_patient
-  ON guardian_links (patient_id)
-  WHERE status = 'active_shared_control';
 
 -- Doctor verifications table
 CREATE TABLE IF NOT EXISTS doctor_verifications (

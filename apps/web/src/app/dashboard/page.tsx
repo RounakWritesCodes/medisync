@@ -3,9 +3,11 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
+import { useActiveProfile, getRelationshipLabel } from '@/contexts/ActiveProfileContext'
 import { Heart, PlusCircle, FolderOpen, Route, ClipboardList, FilePlus, Shield, Siren } from 'lucide-react'
 
 export default function DashboardPage() {
+  const { activeProfile } = useActiveProfile()
   const [user, setUser] = useState<any>(null)
   const [mounted, setMounted] = useState(false)
   const [recordCount, setRecordCount] = useState(0)
@@ -30,21 +32,36 @@ export default function DashboardPage() {
     return 'Good evening'
   }
 
+  const getDisplayName = () => {
+    const name = activeProfile?.fullName || activeProfile?.full_name
+    if (name) return name
+    if (user?.username) return user.username
+    if (user?.email) return user.email.split('@')[0]
+    return 'there'
+  }
+
   const iconMap: Record<string, React.ComponentType<any>> = {
     clinical_notes: ClipboardList, add_note: FilePlus, shield: Shield, emergency: Siren,
   }
 
   return (
     <div className={`${mounted ? 'animate-fade-in' : 'opacity-0'}`} style={{ maxWidth: '1100px', margin: '0 auto' }}>
+      {/* Greeting Section */}
       <div style={{ marginBottom: '40px' }}>
         <h1 style={{ fontSize: '36px', fontWeight: 700, marginBottom: '8px' }}>
-          {getGreeting()}, <span style={{ color: 'var(--color-primary)' }}>{user?.username || 'there'}</span>
+          {getGreeting()}, <span style={{ color: 'var(--color-primary)' }}>{getDisplayName()}</span>
         </h1>
         <p style={{ fontSize: '16px', color: 'var(--color-on-surface-variant)' }}>
           Manage your health with AI-powered insights and secure record keeping.
         </p>
+        {activeProfile && activeProfile.relationship !== 'SELF' && (
+          <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)', marginTop: '4px' }}>
+            Viewing profile: {activeProfile.full_name} ({getRelationshipLabel(activeProfile.relationship)})
+          </p>
+        )}
       </div>
 
+      {/* Stats Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '32px' }}>
         <div className="glass-card" style={{ padding: '32px' }}>
           <div className="flex items-center gap-2" style={{ marginBottom: '20px' }}>
@@ -92,6 +109,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Quick Actions */}
       <div className="glass-card" style={{ padding: '32px', marginBottom: '32px' }}>
         <div className="section-title">
           <Route size={22} style={{ color: 'var(--color-primary)' }} />

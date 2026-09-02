@@ -3,8 +3,9 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useState, useEffect, useRef } from 'react'
-import { Brain, LayoutDashboard, ClipboardList, HeartPulse, FolderOpen, Shield, Siren, Users, User, LogOut, Stethoscope } from 'lucide-react'
+import { Brain, LayoutDashboard, ClipboardList, HeartPulse, FolderOpen, Shield, Siren, User, LogOut, Stethoscope } from 'lucide-react'
 import { api } from '@/lib/api'
+import ProfileSwitcher from './ProfileSwitcher'
 
 const iconMap: Record<string, React.ComponentType<any>> = {
   neurology: Brain,
@@ -14,7 +15,6 @@ const iconMap: Record<string, React.ComponentType<any>> = {
   folder_open: FolderOpen,
   shield: Shield,
   emergency: Siren,
-  family_restroom: Users,
   account_circle: User,
   logout: LogOut,
 }
@@ -30,8 +30,6 @@ export default function Sidebar() {
   useEffect(() => {
     const getUser = async () => {
       try {
-        // Use the shared API client so this hits the backend (:3001), not Next.js.
-        // A raw fetch('/api/auth/me') would 404 against the frontend server.
         const data = await api.getMe()
         setUser(data.user)
         setProfile(data.profile)
@@ -55,8 +53,6 @@ export default function Sidebar() {
 
   const goToLogin = () => {
     setShowDropdown(false)
-    // Clear the server session, then land on /login.
-    // (Previously this button never logged out and just went to /register.)
     api.logout().catch(() => {}).finally(() => {
       window.location.href = '/login'
     })
@@ -79,10 +75,8 @@ export default function Sidebar() {
     { href: '/dashboard/records', label: 'Medical Records', icon: 'folder_open' },
     { href: '/dashboard/access-requests', label: 'Access Requests', icon: 'shield' },
     { href: '/dashboard/emergency-access', label: 'Emergency Access', icon: 'emergency' },
-    { href: '/dashboard/guardian', label: 'Guardian', icon: 'family_restroom' },
   ]
 
-  // Admin-only console (D1 doctor credential review).
   const adminLinks = user?.role === 'admin'
     ? [{ href: '/dashboard/admin/verifications', label: 'Doctor Verification', icon: 'stethoscope' }]
     : []
@@ -99,6 +93,11 @@ export default function Sidebar() {
         <Link href="/" className="sidebar-logo">
           <Brain />
         </Link>
+
+        {/* Profile Switcher */}
+        <div className="w-full px-2" style={{ marginBottom: 16 }}>
+          <ProfileSwitcher />
+        </div>
 
         <nav className="sidebar-nav">
           {navLinks.map((link) => (

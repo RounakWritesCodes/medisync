@@ -3,6 +3,13 @@ import math
 from collections import Counter
 from pathlib import Path
 
+from app.probability_engine import (
+    calculate_probabilities,
+    normalize_symptom,
+    equivalent,
+    matched_symptoms,
+)
+
 
 DATA_PATH = Path(__file__).parent / "data" / "medical_knowledge.json"
 
@@ -123,227 +130,115 @@ def rank_diseases(
     severity=None,
     limit: int = 5,
 ):
+    """Rank diseases using Bayesian probability engine.
+
+    This function now uses the probability_engine module to calculate
+    proper posterior probabilities based on:
+    - Prior disease prevalence
+    - Conditional symptom probabilities
+    - Age and sex demographic factors
+    - Duration compatibility
+    - Contradicting symptom handling
+
+    Returns list of diseases with probability scores and metadata.
+    """
     if not symptoms:
         return []
 
-    user = {
-        normalize_symptom(s)
-        for s in symptoms
-        if str(s).strip()
-    }
-
-    if not user:
-        return []
-
-    results = []
-
-    for condition in KNOWLEDGE_BASE:
-        core = {
-            normalize_symptom(s)
-            for s in condition.get("core_symptoms", [])
-        }
-
-        supporting = {
-            normalize_symptom(s)
-            for s in condition.get("supporting_symptoms", [])
-        }
-
-        distinctive = {
-            normalize_symptom(s)
-            for s in condition.get("distinctive_symptoms", [])
-        }
-
-        contradicting = {
-            normalize_symptom(s)
-            for s in condition.get("contradicting_symptoms", [])
-        }
-
-        required_any_of = condition.get("required_any_of", [])
-
-        core_matches = matched_symptoms(user, core)
-        supporting_matches = matched_symptoms(user, supporting)
-        distinctive_matches = matched_symptoms(user, distinctive)
-        contradiction_matches = matched_symptoms(user, contradicting)
-
-        all_matches = (
-            core_matches
-            | supporting_matches
-            | distinctive_matches
-        )
-
-        if not all_matches:
-            continue
-
-        if len(user) >= 3 and len(all_matches) == 1:
-            only_match = next(iter(all_matches))
-
-            if only_match in GENERIC_SYMPTOMS:
-                continue
-
-        required_group_passed = True
-
-        if required_any_of:
-            required_group_passed = False
-
-            for group in required_any_of:
-                if not isinstance(group, list):
-                    continue
-
-                group_set = {
-                    normalize_symptom(s)
-                    for s in group
-                }
-
-                if matched_symptoms(user, group_set):
-                    required_group_passed = True
-                    break
-
-        if not required_group_passed:
-            continue
-
-        core_coverage = (
-            len(core_matches)
-            / max(len(core), 1)
-        )
-
-        support_coverage = (
-            len(supporting_matches)
-            / max(len(supporting), 1)
-        )
-
-        user_coverage = (
-            len(all_matches)
-            / max(len(user), 1)
-        )
-
-        specificity_total = weighted_match_strength(all_matches)
-
-        maximum_specificity = sum(
-            sorted(
-                (
-                    symptom_specificity(s)
-                    for s in user
-                ),
-                reverse=True,
-            )[:max(len(all_matches), 1)]
-        )
-
-        specificity_score = (
-            specificity_total
-            / max(maximum_specificity, 0.001)
-        )
-
-        specificity_score = min(
-            specificity_score,
-            1.0,
-        )
-
-        score = (
-            0.38 * core_coverage
-            + 0.25 * user_coverage
-            + 0.12 * support_coverage
-            + 0.25 * specificity_score
-        )
-
-        if distinctive_matches:
-            score += min(
-                0.16,
-                0.08 * len(distinctive_matches),
-            )
-
-        score -= min(
-            0.45,
-            0.22 * len(contradiction_matches),
-        )
-
-        if all(
-            symptom in GENERIC_SYMPTOMS
-            for symptom in all_matches
-        ):
-            score -= 0.10
-
-        if len(all_matches) >= 4:
-            score += 0.08
-        elif len(all_matches) >= 3:
-            score += 0.05
-        elif len(all_matches) >= 2:
-            score += 0.02
-
-        unexplained = user - all_matches
-
-        if len(user) >= 4:
-            unexplained_ratio = len(unexplained) / len(user)
-
-            if unexplained_ratio >= 0.75:
-                score -= 0.15
-            elif unexplained_ratio >= 0.50:
-                score -= 0.07
-
-        score = max(
-            0.0,
-            min(score, 1.0),
-        )
-
-        if score < 0.25:
-            continue
-
-        results.append(
-            {
-                "name": condition["disease"],
-                "match_score": round(score, 3),
-                "relevance_label": relevance_label(score),
-                "matched_symptoms": sorted(all_matches),
-                "core_symptoms_matched": sorted(core_matches),
-                "supporting_symptoms_matched": sorted(
-                    supporting_matches
-                ),
-                "distinctive_symptoms_matched": sorted(
-                    distinctive_matches
-                ),
-                "contradicting_symptoms": sorted(
-                    contradiction_matches
-                ),
-                "unexplained_symptoms": sorted(unexplained),
-                "tests": condition.get("tests", []),
-                "specialist": condition.get(
-                    "specialist",
-                    "General Physician",
-                ),
-                "self_care": condition.get(
-                    "self_care",
-                    [],
-                ),
-                "medication_information": condition.get(
-                    "medication_information",
-                    [],
-                ),
-                "category": condition.get(
-                    "category",
-                    "general",
-                ),
-            }
-        )
-
-    results.sort(
-        key=lambda item: (
-            item["match_score"],
-            len(item["distinctive_symptoms_matched"]),
-            len(item["core_symptoms_matched"]),
-            len(item["matched_symptoms"]),
-        ),
-        reverse=True,
+    # Use the probability engine for Bayesian inference
+    prob_results = calculate_probabilities(
+        symptoms=symptoms,
+        age=age,
+        sex=sex,
+        duration=duration,
+        severity=severity,
+        limit=limit,
     )
 
+    if not prob_results:
+        return []
+
+    # Build enriched results with knowledge base metadata
+    results = []
+    knowledge_lookup = {
+        normalize_symptom(c["disease"]): c
+        for c in KNOWLEDGE_BASE
+    }
+
+    for prob_data in prob_results:
+        disease_name = prob_data["disease"]
+        normalized_name = normalize_symptom(disease_name)
+
+        # Get full condition data from knowledge base
+        condition = knowledge_lookup.get(normalized_name, {})
+
+        # Build result with both probability and metadata
+        result = {
+            "name": disease_name,
+            # Bayesian probability (main score)
+            "match_score": round(prob_data["probability"], 3),
+            "probability": round(prob_data["probability"], 3),
+            "probability_percent": prob_data["probability_percent"],
+            "confidence": prob_data["confidence"],
+            # Relevance label (backward compatible)
+            "relevance_label": _probability_to_label(
+                prob_data["probability"]
+            ),
+            # Symptom matches
+            "matched_symptoms": prob_data["all_matches"],
+            "core_symptoms_matched": prob_data["core_matches"],
+            "supporting_symptoms_matched": prob_data[
+                "supporting_matches"
+            ],
+            "distinctive_symptoms_matched": prob_data[
+                "distinctive_matches"
+            ],
+            "contradicting_symptoms": prob_data[
+                "contradiction_matches"
+            ],
+            "unexplained_symptoms": sorted(
+                set(symptoms) - set(prob_data["all_matches"])
+            ),
+            # Knowledge base data
+            "tests": condition.get("tests", []),
+            "specialist": condition.get(
+                "specialist", "General Physician"
+            ),
+            "self_care": condition.get("self_care", []),
+            "medication_information": condition.get(
+                "medication_information", []
+            ),
+            "category": condition.get("category", "general"),
+            # Probability details (for debugging/transparency)
+            "_probability_details": {
+                "prior": round(prob_data["prior"], 6),
+                "core_coverage": round(prob_data["core_coverage"], 3),
+                "total_coverage": round(
+                    prob_data["total_coverage"], 3
+                ),
+                "age_factor": round(prob_data["age_factor"], 3),
+                "sex_factor": round(prob_data["sex_factor"], 3),
+                "duration_factor": round(
+                    prob_data["duration_factor"], 3
+                ),
+            },
+        }
+
+        results.append(result)
+
+    # Ensure diversity across categories (max 3 per category)
     selected = []
     category_counts = Counter()
 
     for result in results:
         category = result.get("category", "general")
 
-        if (
-            category_counts[category] >= 3
-            and result["match_score"] < 0.72
-        ):
+        # Allow more from same category if probability is very high
+        max_per_category = (
+            4 if result["probability"] >= 0.25 else 3
+        )
+
+        if category_counts[category] >= max_per_category:
             continue
 
         selected.append(result)
@@ -353,3 +248,13 @@ def rank_diseases(
             break
 
     return selected
+
+
+def _probability_to_label(probability: float) -> str:
+    """Convert probability to relevance label (backward compatible)."""
+    if probability >= 0.25:
+        return "strong"
+    elif probability >= 0.10:
+        return "moderate"
+    else:
+        return "weak"

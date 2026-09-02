@@ -1,14 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { eq, or, and, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { accessRequests, users, guardianLinks } from "../db/schema.js";
-import { requireAuth, requireVerifiedDoctor } from "../middleware/auth.js";
+import { accessRequests, users } from "../db/schema.js";
+import { requireAuth } from "../middleware/auth.js";
 import { auditEntry } from "../lib/audit.js";
-import {
-  resolveConsentModel,
-  getActiveGuardiansOf,
-  type RecordScope,
-} from "../lib/access.js";
+import { type RecordScope } from "../lib/access.js";
 
 /** Grant duration bounds (D2): default 30 days, hard cap 2 years. */
 const DEFAULT_GRANT_DAYS = 30;
@@ -70,18 +66,11 @@ function isSubsetOf(granted: RecordScope, requested: RecordScope): boolean {
 
 export async function accessRequestsRoutes(app: FastifyInstance) {
   /**
-   * Listing is visible to: the doctor who filed it, the patient it targets,
-   * AND active guardians of that patient (they act as consent authority).
+   * Listing is visible to: the doctor who is invited, and the patient who
+   * created the request.
    */
   app.get("/api/access-requests", { preHandler: [requireAuth] }, async (request, reply) => {
     const uid = request.userId!;
-
-    // Patients also see requests filed against patients they actively guard.
-    const guarded = await db
-      .select({ patientId: guardianLinks.patientId })
-      .from(guardianLinks)
-      .where(and(eq(guardianLinks.guardianId, uid), eq(guardianLinks.status, "active_shared_control")));
-    const visiblePatientIds = [uid, ...guarded.map((g) => g.patientId)];
 
     const rows = await db
       .select({
@@ -92,9 +81,6 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
         scope: accessRequests.scope,
         grantedScope: accessRequests.grantedScope,
         status: accessRequests.status,
-        consentModel: accessRequests.consentModel,
-        patientApprovedAt: accessRequests.patientApprovedAt,
-        guardianApprovedAt: accessRequests.guardianApprovedAt,
         respondedBy: accessRequests.respondedBy,
         respondedAt: accessRequests.respondedAt,
         expiresAt: accessRequests.expiresAt,
@@ -108,7 +94,7 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
       .where(
         or(
           eq(accessRequests.doctorId, uid),
-          inArray(accessRequests.patientId, visiblePatientIds)
+          eq(accessRequests.patientId, uid)
         )
       );
 
@@ -139,17 +125,24 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Doctor-only (and only VERIFIED doctors — signup alone grants no clinical
-   * authority). Files a pending request; no access is granted by requesting.
+   * Patient-only access requests. A patient invites a doctor to view their
+   * medical records. The doctor receives the request and can accept or decline.
    */
   app.post(
     "/api/access-requests",
-    { preHandler: [requireAuth, requireVerifiedDoctor()] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const body = request.body as Record<string, unknown>;
-      const patientEmail = typeof body.patient_email === "string" ? body.patient_email.trim().toLowerCase() : "";
-      if (!patientEmail) {
-        return reply.status(400).send({ error: "patient_email is required" });
+      const role = request.userRole!;
+      const uid = request.userId!;
+
+      if (role !== "patient") {
+        return reply.status(403).send({ error: "Only patients can create access requests" });
+      }
+
+      const doctorEmail = typeof body.doctor_email === "string" ? body.doctor_email.trim().toLowerCase() : "";
+      if (!doctorEmail) {
+        return reply.status(400).send({ error: "doctor_email is required" });
       }
 
       const reason = typeof body.reason === "string" ? body.reason.trim() : "";
@@ -165,10 +158,13 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: scopeResult.error });
       }
 
-      const [patient] = await db.select().from(users).where(eq(users.email, patientEmail)).limit(1);
-      if (!patient) return reply.status(404).send({ error: "Patient not found" });
-      if (patient.id === request.userId) {
+      const [doctor] = await db.select().from(users).where(eq(users.email, doctorEmail)).limit(1);
+      if (!doctor) return reply.status(404).send({ error: "Doctor not found" });
+      if (doctor.id === uid) {
         return reply.status(400).send({ error: "Cannot request access to your own account" });
+      }
+      if (doctor.role !== "doctor" && doctor.role !== "admin") {
+        return reply.status(400).send({ error: "The email provided does not belong to a doctor" });
       }
 
       // One live request per doctor/patient pair — prevents spam harassment.
@@ -177,32 +173,38 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
         .from(accessRequests)
         .where(
           and(
-            eq(accessRequests.doctorId, request.userId!),
-            eq(accessRequests.patientId, patient.id),
+            eq(accessRequests.doctorId, doctor.id),
+            eq(accessRequests.patientId, uid),
             eq(accessRequests.status, "pending")
           )
         )
         .limit(1);
       if (existing) {
-        return reply.status(409).send({ error: "A pending access request already exists for this patient" });
+        return reply.status(409).send({ error: "A pending access request already exists for this doctor" });
       }
+
+      // Validate profile_ids — must be an array of strings (profile UUIDs) or empty
+      const profileIds = Array.isArray(body.profile_ids)
+        ? body.profile_ids.filter((p: unknown) => typeof p === "string")
+        : [];
 
       const [ar] = await db
         .insert(accessRequests)
         .values({
-          doctorId: request.userId!,
-          patientId: patient.id,
+          doctorId: doctor.id,
+          patientId: uid,
           reason,
           scope: scopeResult.value,
+          profileIds,
           status: "pending",
         })
         .returning();
 
       await auditEntry({
-        actorId: request.userId!,
-        actorRole: request.userRole,
+        actorId: uid,
+        actorRole: role,
         actionType: "access_request.created",
-        targetPatientId: patient.id,
+        targetPatientId: uid,
         details: { accessRequestId: ar.id, reason, scope: scopeResult.value },
       });
 
@@ -211,13 +213,10 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
   );
 
   /**
-   * Decision endpoint. Consent authority is resolved LIVE at decision time:
-   *   - no active guardian                          -> patient decides alone
-   *   - guardian trigger minor/emergency_incapacity -> guardian ONLY
-   *   - guardian trigger advance_directive          -> BOTH must approve ("dual")
-   * Denial by any authorized party denies immediately. Revocation available to
-   * requester, patient, and authorized guardians at any time.
-   * On approval the approver sets the grant duration (default 30d, max 730d)
+   * Decision endpoint:
+   *  - Only the invited doctor can approve or deny.
+   *  - The patient who created the request (or an active guardian) can revoke.
+   * On approval the doctor sets the grant duration (default 30d, max 730d)
    * and may narrow (never widen) the scope.
    */
   app.patch("/api/access-requests/:id", { preHandler: [requireAuth] }, async (request, reply) => {
@@ -232,15 +231,9 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
     const isPatient = existing.patientId === uid;
     const isDoctor = existing.doctorId === uid;
 
-    // Who are this patient's active guardians right now?
-    const guardians = await getActiveGuardiansOf(existing.patientId);
-    const activeGuardianLink = guardians[0] ?? null;
-    const isGuardian = activeGuardianLink?.guardianId === uid;
-    if (!isPatient && !isDoctor && !isGuardian) {
+    if (!isPatient && !isDoctor) {
       return reply.status(403).send({ error: "Access denied" });
     }
-
-    const consentModel = await resolveConsentModel(existing.patientId);
 
     const status = body.status;
     if (!status || !["approved", "denied", "revoked"].includes(status)) {
@@ -252,10 +245,12 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
     let updateValues: Partial<typeof accessRequests.$inferInsert> = { updatedAt: now };
 
     if (status === "revoked") {
-      if (!["pending", "partially_approved", "approved"].includes(existing.status)) {
-        return reply.status(409).send({
-          error: `Cannot change status from '${existing.status}' to 'revoked'`,
-        });
+      // Patient can revoke their own request. Doctor can revoke an approved grant.
+      if (!isPatient && !isDoctor) {
+        return reply.status(403).send({ error: "Only the patient or the doctor can revoke" });
+      }
+      if (!["pending", "approved"].includes(existing.status)) {
+        return reply.status(409).send({ error: `Cannot revoke from status '${existing.status}'` });
       }
       actionType = "access_request.revoked";
       updateValues.status = "revoked";
@@ -263,25 +258,21 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
       updateValues.respondedAt = now;
     } else if (existing.status === "approved" || existing.status === "denied" || existing.status === "revoked") {
       return reply.status(409).send({ error: `Cannot change status from '${existing.status}' to '${status}'` });
-    } else if (consentModel === "guardian" && !isGuardian) {
-      // A minor / incapacitated patient cannot consent — the guardian decides.
-      return reply.status(403).send({
-        error: `A guardian manages this account (${activeGuardianLink?.triggerType}). Only the guardian can approve or deny this request.`,
-        code: "GUARDIAN_CONSENT_REQUIRED",
-      });
-    } else if (consentModel === "patient" && !isPatient) {
-      // No guardianship on file: the patient always holds consent authority.
-      return reply.status(403).send({ error: "Only the patient can approve or deny access requests" });
-    } else if (consentModel === "dual" && !isPatient && !isGuardian) {
-      return reply.status(403).send({ error: "Only the patient or their guardian can act on this request" });
     } else if (status === "denied") {
+      // Only the invited doctor can deny.
+      if (!isDoctor) {
+        return reply.status(403).send({ error: "Only the invited doctor can approve or deny this request" });
+      }
       actionType = "access_request.denied";
       updateValues.status = "denied";
-      updateValues.consentModel = consentModel;
       updateValues.respondedBy = uid;
       updateValues.respondedAt = now;
     } else {
-      // --- Approval path ---
+      // --- Approval path: only the invited doctor ---
+      if (!isDoctor) {
+        return reply.status(403).send({ error: "Only the invited doctor can approve this request" });
+      }
+
       let expiresAt: Date;
       if (body.duration_days !== undefined && body.duration_days !== null && body.duration_days !== "") {
         const days = Number(body.duration_days);
@@ -304,45 +295,12 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
         grantedScope = narrowedResult.value;
       }
 
-      if (consentModel === "dual") {
-        // Both parties must approve before access activates.
-        const patientOk = existing.patientApprovedAt !== null || isPatient;
-        const guardianOk = existing.guardianApprovedAt !== null || isGuardian;
-        if (!(patientOk && guardianOk)) {
-          const [partial] = await db
-            .update(accessRequests)
-            .set({
-              status: "partially_approved",
-              consentModel,
-              ...(isPatient ? { patientApprovedAt: now } : {}),
-              ...(isGuardian ? { guardianApprovedAt: now } : {}),
-              respondedBy: uid,
-              respondedAt: now,
-              updatedAt: now,
-            })
-            .where(eq(accessRequests.id, id))
-            .returning();
-
-          await auditEntry({
-            actorId: uid,
-            actorRole: role,
-            actionType: "access_request.partially_approved",
-            targetPatientId: existing.patientId,
-            details: { accessRequestId: id, awaiting: isPatient ? "guardian" : "patient" },
-          });
-          return reply.send({ accessRequest: partial, awaitingSecondConsent: true });
-        }
-      }
-
       actionType = "access_request.approved";
       updateValues.status = "approved";
-      updateValues.consentModel = consentModel;
       updateValues.expiresAt = expiresAt;
       updateValues.grantedScope = grantedScope;
       updateValues.respondedBy = uid;
       updateValues.respondedAt = now;
-      if (isPatient) updateValues.patientApprovedAt = now;
-      if (isGuardian) updateValues.guardianApprovedAt = now;
     }
 
     const [updated] = await db.update(accessRequests).set(updateValues).where(eq(accessRequests.id, id)).returning();
@@ -354,8 +312,7 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
       targetPatientId: existing.patientId,
       details: {
         accessRequestId: id,
-        decidedAsGuardian: isGuardian && !isPatient,
-        consentModel,
+        decidedAs: isDoctor ? "doctor" : "patient",
         ...(actionType === "access_request.approved"
           ? {
               durationDays: Math.round((updateValues.expiresAt!.getTime() - now.getTime()) / 86400000),
@@ -367,5 +324,40 @@ export async function accessRequestsRoutes(app: FastifyInstance) {
     });
 
     return reply.send({ accessRequest: updated });
+  });
+
+  /**
+   * DELETE /api/access-requests/:id
+   * Remove an old access request from history. Only the patient or doctor
+   * involved can delete, and only non-pending requests (denied, revoked, expired).
+   */
+  app.delete("/api/access-requests/:id", { preHandler: [requireAuth] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const uid = request.userId!;
+
+    const [existing] = await db.select().from(accessRequests).where(eq(accessRequests.id, id)).limit(1);
+    if (!existing) return reply.status(404).send({ error: "Access request not found" });
+
+    // Only the patient or doctor involved can delete
+    if (existing.patientId !== uid && existing.doctorId !== uid) {
+      return reply.status(403).send({ error: "Access denied" });
+    }
+
+    // Only allow deleting non-pending requests
+    if (existing.status === "pending") {
+      return reply.status(400).send({ error: "Cannot delete a pending request — deny or revoke it instead" });
+    }
+
+    await db.delete(accessRequests).where(eq(accessRequests.id, id));
+
+    await auditEntry({
+      actorId: uid,
+      actorRole: request.userRole,
+      actionType: "access_request.deleted",
+      targetPatientId: existing.patientId,
+      details: { accessRequestId: id, previousStatus: existing.status },
+    });
+
+    return reply.send({ ok: true });
   });
 }

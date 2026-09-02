@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const API_INTERNAL = process.env.API_INTERNAL_URL || "http://api:3001";
 
 /**
  * Server-side auth middleware.
@@ -30,7 +30,7 @@ export async function middleware(request: NextRequest) {
 
   // Validate the session against the API
   try {
-    const apiRes = await fetch(`${API_BASE}/api/auth/me`, {
+    const apiRes = await fetch(`${API_INTERNAL}/api/auth/me`, {
       headers: { Cookie: `medisync-session=${sessionCookie}` },
       cache: "no-store",
     });

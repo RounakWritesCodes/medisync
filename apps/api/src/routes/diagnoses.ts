@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq, and, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { diagnoses, guardianLinks, users } from "../db/schema.js";
+import { diagnoses, guardianLinks, users, patientProfiles } from "../db/schema.js";
 import { requireAuth } from "../middleware/auth.js";
 import { getActiveGuardianLink, grantedPatientIds } from "../lib/access.js";
 import { auditEntry } from "../lib/audit.js";
@@ -142,8 +142,23 @@ export async function diagnosesRoutes(app: FastifyInstance) {
     const role = request.userRole!;
 
     const own = await db.select().from(diagnoses).where(eq(diagnoses.userId, uid));
-    let combined: Array<(typeof diagnoses.$inferSelect) & { owner: boolean; patient_email?: string | null }> =
+    let combined: Array<(typeof diagnoses.$inferSelect) & { owner: boolean; patient_email?: string | null; profile_name?: string | null; profile_relationship?: string | null }> =
       own.map((d) => ({ ...d, owner: true }));
+
+    // Fetch profile names for own diagnoses
+    for (const d of combined) {
+      if (d.profileId) {
+        const [profile] = await db
+          .select({ fullName: patientProfiles.fullName, relationship: patientProfiles.relationship })
+          .from(patientProfiles)
+          .where(eq(patientProfiles.id, d.profileId))
+          .limit(1);
+        if (profile) {
+          (d as any).profile_name = profile.fullName;
+          (d as any).profile_relationship = profile.relationship;
+        }
+      }
+    }
 
     // Guardian path (records_and_diagnoses links only).
     const links = await db
@@ -159,7 +174,21 @@ export async function diagnosesRoutes(app: FastifyInstance) {
     for (const link of links) {
       if (link.patientId === uid) continue;
       const rows = await db.select().from(diagnoses).where(eq(diagnoses.userId, link.patientId));
-      combined.push(...rows.map((d) => ({ ...d, owner: false })));
+      for (const d of rows) {
+        const entry = { ...d, owner: false } as any;
+        if (d.profileId) {
+          const [profile] = await db
+            .select({ fullName: patientProfiles.fullName, relationship: patientProfiles.relationship })
+            .from(patientProfiles)
+            .where(eq(patientProfiles.id, d.profileId))
+            .limit(1);
+          if (profile) {
+            entry.profile_name = profile.fullName;
+            entry.profile_relationship = profile.relationship;
+          }
+        }
+        combined.push(entry);
+      }
       await auditEntry({
         actorId: uid,
         actorRole: role,
@@ -169,13 +198,17 @@ export async function diagnosesRoutes(app: FastifyInstance) {
       });
     }
 
-    // Doctor/admin path: live consent grants.
+    // Doctor/admin path: live consent grants + profile filter.
     if (role === "doctor" || role === "admin") {
       const grants = await grantedPatientIds(uid);
-      for (const [pid, scope] of grants) {
+      for (const [pid, { scope, profileIds }] of grants) {
         if (pid === uid) continue;
         const rows = await db.select().from(diagnoses).where(eq(diagnoses.userId, pid));
-        const visible = rows.filter((d) => diagnosisInDateScope(d, scope));
+        const visible = rows.filter((d) => {
+          // Profile filter: if profileIds is non-empty, only show diagnoses matching those profiles
+          if (profileIds.length > 0 && d.profileId && !profileIds.includes(d.profileId)) return false;
+          return diagnosisInDateScope(d, scope);
+        });
         const [patient] = await db
           .select({ email: users.email })
           .from(users)
@@ -217,10 +250,14 @@ export async function diagnosesRoutes(app: FastifyInstance) {
         });
         return reply.send({ diagnosis: { ...d, owner: false } });
       }
-      // Doctor/admin with a LIVE grant covering this entry's date?
+      // Doctor/admin with a LIVE grant covering this entry's date + profile?
       if (request.userRole === "doctor" || request.userRole === "admin") {
         const grant = await grantedPatientIds(uid).then((m) => m.get(d.userId));
-        if (!grant || !diagnosisInDateScope(d, grant)) {
+        if (!grant || !diagnosisInDateScope(d, grant.scope)) {
+          return reply.status(403).send({ error: "Access denied" });
+        }
+        // Profile filter
+        if (grant.profileIds.length > 0 && d.profileId && !grant.profileIds.includes(d.profileId)) {
           return reply.status(403).send({ error: "Access denied" });
         }
         await auditEntry({
@@ -242,13 +279,31 @@ export async function diagnosesRoutes(app: FastifyInstance) {
     "/api/diagnoses",
     {
       preHandler: [requireAuth],
-      // AI calls cost real money — cap per-user/IP abuse.
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
     const input = request.body as any;
+    const uid = request.userId!;
 
-    // --- Normalization + validation (previously unbounded/unvalidated) ---
+    // --- Validate profile_id if provided ---
+    let profileId = input?.profile_id || null;
+    if (profileId) {
+      const [profile] = await db
+        .select()
+        .from(patientProfiles)
+        .where(eq(patientProfiles.id, profileId))
+        .limit(1);
+
+      if (!profile) {
+        return reply.status(404).send({ error: "Profile not found" });
+      }
+
+      if (profile.guardianUserId !== uid) {
+        return reply.status(403).send({ error: "Access denied: you do not own this profile" });
+      }
+    }
+
+    // --- Normalization + validation ---
     const name = typeof input?.patientInfo?.name === "string" ? input.patientInfo.name.trim() : "";
     if (!name || name.length > MAX_NAME_LENGTH) {
       return reply.status(400).send({ error: `patientInfo.name is required (max ${MAX_NAME_LENGTH} chars)` });
@@ -307,8 +362,6 @@ export async function diagnosesRoutes(app: FastifyInstance) {
       aiResponse = await callAI(normalizedInput);
     } catch (err) {
       console.error("AI diagnosis generation failed:", err);
-      // Generic message in production; include the underlying reason in dev so
-      // misconfiguration (missing key, bad model, provider outage) is actionable.
       const detail = config.nodeEnv === "production" ? "" : ` (${err instanceof Error ? err.message : "unknown error"})`;
       return reply.status(502).send({ error: `AI diagnosis service is unavailable. Please try again later.${detail}` });
     }
@@ -316,11 +369,11 @@ export async function diagnosesRoutes(app: FastifyInstance) {
     const [d] = await db
       .insert(diagnoses)
       .values({
-        userId: request.userId!,
+        userId: uid,
+        profileId: profileId,
         patientName: normalizedInput.patientInfo.name,
         age: Math.round(age),
         gender: normalizedInput.patientInfo.gender,
-        // drizzle numeric columns are string-typed; coerce safely
         weight: normalizedInput.patientInfo.weight != null ? String(normalizedInput.patientInfo.weight) : null,
         height: normalizedInput.patientInfo.height != null ? String(normalizedInput.patientInfo.height) : null,
         allergies: normalizedInput.patientInfo.allergies || [],

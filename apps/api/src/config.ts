@@ -26,6 +26,8 @@ export const config = {
   port: parseInt(process.env.API_PORT || "3001", 10),
   nodeEnv: isProduction ? "production" : "development",
   s3Endpoint: process.env.S3_ENDPOINT || "http://localhost:9000",
+  /** Public-facing URL the browser can reach for MinIO (rewrites presigned URLs). */
+  s3PublicEndpoint: process.env.S3_PUBLIC_ENDPOINT || "http://localhost:9000",
   s3AccessKey: process.env.S3_ACCESS_KEY || "medisync",
   s3SecretKey: process.env.S3_SECRET_KEY || "medisync_dev",
   s3Bucket: process.env.S3_BUCKET || "medisync",

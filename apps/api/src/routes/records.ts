@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { eq, inArray } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { db } from "../db/index.js";
-import { records, users } from "../db/schema.js";
+import { records, users, patientProfiles } from "../db/schema.js";
 import { requireAuth } from "../middleware/auth.js";
 import {
   hasPatientAccess,
@@ -16,6 +16,7 @@ import {
 } from "../lib/access.js";
 import { auditEntry } from "../lib/audit.js";
 import { s3 } from "../lib/s3.js";
+import { S3Client } from "@aws-sdk/client-s3";
 import { config } from "../config.js";
 
 /** Upload allowlist — documents and images only. */
@@ -30,6 +31,22 @@ const VALID_RECORD_TYPES = ["prescription", "lab_result", "checkup", "surgery", 
 const PRESIGN_EXPIRY_SECONDS = 300; // 5 minutes
 
 /**
+ * S3 client configured with the *public* endpoint so presigned URLs point
+ * to a hostname the browser can resolve (e.g. localhost:9000 instead of
+ * Docker-internal minio:9000).  getSignedUrl() is pure math — no network
+ * call — so this is safe to create at module scope.
+ */
+const s3Public = new S3Client({
+  endpoint: config.s3PublicEndpoint,
+  forcePathStyle: true,
+  region: config.s3Region,
+  credentials: {
+    accessKeyId: config.s3AccessKey,
+    secretAccessKey: config.s3SecretKey,
+  },
+});
+
+/**
  * New uploads store the bare S3 object key in attachment_url.
  * Legacy rows may still hold a full public URL — those are returned as-is
  * (they predate presigned access).
@@ -39,7 +56,7 @@ async function attachmentForView(stored: string | null): Promise<string | null> 
   if (stored.startsWith("http")) return stored;
   try {
     return await getSignedUrl(
-      s3,
+      s3Public,
       new GetObjectCommand({ Bucket: config.s3Bucket, Key: stored }),
       { expiresIn: PRESIGN_EXPIRY_SECONDS }
     );
@@ -88,13 +105,17 @@ export async function recordsRoutes(app: FastifyInstance) {
       }
     }
 
-    // 3) Doctor/admin consent-backed grants — scope enforced per record, NOW.
+    // 3) Doctor/admin consent-backed grants — scope + profile enforced per record, NOW.
     let grantedRecords: (typeof records.$inferSelect)[] = [];
     if (role === "doctor" || role === "admin") {
       const grants = await grantedPatientIds(uid);
-      for (const [pid, scope] of grants) {
+      for (const [pid, { scope, profileIds }] of grants) {
         const rows = await db.select().from(records).where(eq(records.patientId, pid));
-        const visible = rows.filter((r) => recordMatchesScope(r, scope));
+        const visible = rows.filter((r) => {
+          // Profile filter: if profileIds is non-empty, only show records matching those profiles
+          if (profileIds.length > 0 && r.profileId && !profileIds.includes(r.profileId)) return false;
+          return recordMatchesScope(r, scope);
+        });
         grantedRecords.push(...visible);
         await auditEntry({
           actorId: uid,
@@ -118,10 +139,30 @@ export async function recordsRoutes(app: FastifyInstance) {
       : [];
     const patientMap = new Map(patientRows.map((p) => [p.id, p]));
 
+    // Fetch profile names for all records with a profile_id
+    const profileIds = [...new Set(unique.filter((r) => r.profileId).map((r) => r.profileId!))];
+    const profileRows = profileIds.length
+      ? await db.select({ id: patientProfiles.id, fullName: patientProfiles.fullName, relationship: patientProfiles.relationship })
+          .from(patientProfiles)
+          .where(inArray(patientProfiles.id, profileIds))
+      : [];
+    const profileMap = new Map(profileRows.map((p) => [p.id, p]));
+
+    // Fetch default profile for the current user (fallback for old records without profile_id)
+    const [defaultProfile] = await db
+      .select({ id: patientProfiles.id, fullName: patientProfiles.fullName, relationship: patientProfiles.relationship })
+      .from(patientProfiles)
+      .where(and(eq(patientProfiles.guardianUserId, uid), eq(patientProfiles.isDefault, 1)))
+      .limit(1);
+
     const withMeta = unique.map((r) => {
-      if (r.patientId === uid) return { ...r, owner: true };
+      const profile = r.profileId ? profileMap.get(r.profileId) : null;
+      // Use profile name, or fallback to default profile name for own records
+      const profileName = profile?.fullName ?? (r.patientId === uid && defaultProfile ? defaultProfile.fullName : null);
+      const profileRelationship = profile?.relationship ?? (r.patientId === uid && defaultProfile ? defaultProfile.relationship : null);
+      if (r.patientId === uid) return { ...r, owner: true, profile_name: profileName, profile_relationship: profileRelationship };
       const p = patientMap.get(r.patientId);
-      return { ...r, owner: false, patient_name: p?.username ?? null, patient_email: p?.email ?? null };
+      return { ...r, owner: false, patient_name: p?.username ?? null, patient_email: p?.email ?? null, profile_name: profileName, profile_relationship: profileRelationship };
     });
 
     const withAttachments = await Promise.all(
@@ -192,6 +233,7 @@ export async function recordsRoutes(app: FastifyInstance) {
       .insert(records)
       .values({
         patientId: request.userId!,
+        profileId: (body.profile_id as string) || null,
         type,
         date: body.date,
         doctorName: (body.doctor_name as string) || null,

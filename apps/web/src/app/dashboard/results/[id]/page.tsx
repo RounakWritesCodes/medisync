@@ -43,8 +43,8 @@ function parseStructuredResponse(data: Record<string, unknown>): CardData[] {
   if (conditions && conditions.length > 0) {
     const conditionItems = conditions.map((c) => {
       const name = c.name || 'Unknown'
-      const score = c.match_score ? ` (score: ${c.match_score})` : ''
-      const label = c.relevance_label ? ` [${c.relevance_label}]` : ''
+      const prob = c.probability_percent ? `${c.probability_percent}%` : ''
+      const confidence = c.confidence ? ` (${c.confidence})` : ''
       const symptoms = c.matched_symptoms && Array.isArray(c.matched_symptoms) && (c.matched_symptoms as string[]).length > 0
         ? `\nMatched: ${(c.matched_symptoms as string[]).join(', ')}`
         : ''
@@ -55,7 +55,7 @@ function parseStructuredResponse(data: Record<string, unknown>): CardData[] {
       const selfCare = c.self_care && Array.isArray(c.self_care) && (c.self_care as string[]).length > 0
         ? `\nSelf-care: ${(c.self_care as string[]).join(', ')}`
         : ''
-      return `${name}${label}${score}${symptoms}${specialist}${tests}${selfCare}`
+      return `${name}${prob ? ` - ${prob}${confidence}` : ''}${symptoms}${specialist}${tests}${selfCare}`
     })
     cards.push({
       id: 'conditions',

@@ -6,16 +6,22 @@ import { api } from '@/lib/api'
 import { HeartPulse, Plus } from 'lucide-react'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 import EmptyState from '@/components/EmptyState'
+import ConfirmDialog from '@/components/ui/ConfirmDialog'
 
 interface Diagnosis {
   id: string; patient_name?: string; patientName?: string; severity: string; symptoms: string[]; age: number; created_at?: string; createdAt?: string;
   owner?: boolean; patient_email?: string | null;
+  profile_id?: string | null; profileId?: string | null;
+  profile_name?: string | null; profileName?: string | null;
+  profile_relationship?: string | null; profileRelationship?: string | null;
 }
 
 export default function HistoryPage() {
   const [diagnoses, setDiagnoses] = useState<Diagnosis[]>([])
   const [loading, setLoading] = useState(true)
   const [filterPatient, setFilterPatient] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Diagnosis | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const fetchDiagnoses = async () => {
@@ -39,16 +45,23 @@ export default function HistoryPage() {
     ? (sharedFrom.patientName || sharedFrom.patient_name || sharedFrom.patient_email || null)
     : null
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this diagnosis?')) {
-      await api.deleteDiagnosis(id)
-      setDiagnoses(diagnoses.filter((d) => d.id !== id))
-    }
+  const handleDelete = (diagnosis: Diagnosis) => {
+    setDeleteTarget(diagnosis)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    await api.deleteDiagnosis(deleteTarget.id)
+    setDiagnoses(diagnoses.filter((d) => d.id !== deleteTarget.id))
+    setDeleteTarget(null)
+    setDeleting(false)
   }
 
   if (loading) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner size="lg" text="Loading history..." /></div>
 
   return (
+    <>
     <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
       <div className="flex justify-between items-center animate-fade-in" style={{ marginBottom: '32px' }}>
         <div>
@@ -84,7 +97,24 @@ export default function HistoryPage() {
             <Link key={diagnosis.id} href={`/dashboard/results/${diagnosis.id}`} className="glass-card animate-fade-in" style={{ animationDelay: `${index * 0.05}s`, padding: '24px', textDecoration: 'none', color: 'inherit', display: 'block' }}>
               <div className="flex justify-between items-start" style={{ marginBottom: '16px' }}>
                 <div>
-                  <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '4px' }}>{diagnosis.patientName || diagnosis.patient_name}</h3>
+                  <div className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
+                    <h3 style={{ fontSize: '16px', fontWeight: 600 }}>{diagnosis.patientName || diagnosis.patient_name}</h3>
+                    {(diagnosis.profileName || diagnosis.profile_name) && (
+                      <span style={{
+                        fontSize: '11px',
+                        padding: '2px 8px',
+                        borderRadius: '12px',
+                        background: (diagnosis.profileRelationship || diagnosis.profile_relationship) === 'SELF' ? 'var(--color-primary-container)' : 'var(--color-secondary-container)',
+                        color: (diagnosis.profileRelationship || diagnosis.profile_relationship) === 'SELF' ? 'var(--color-primary)' : 'var(--color-secondary)',
+                        fontWeight: 500,
+                      }}>
+                        {diagnosis.profileName || diagnosis.profile_name}
+                        {(diagnosis.profileRelationship || diagnosis.profile_relationship) && (diagnosis.profileRelationship || diagnosis.profile_relationship) !== 'SELF' && (
+                          <span style={{ marginLeft: '4px', opacity: 0.7 }}>({diagnosis.profileRelationship || diagnosis.profile_relationship})</span>
+                        )}
+                      </span>
+                    )}
+                  </div>
                   <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)' }}>{new Date(diagnosis.createdAt || diagnosis.created_at || '').toLocaleDateString()}</p>
                 </div>
                 <span className={`badge-${diagnosis.severity}`}>{diagnosis.severity}</span>
@@ -105,7 +135,7 @@ export default function HistoryPage() {
                   )}
                 </span>
                 {diagnosis.owner !== false && (
-                  <button onClick={(e) => { e.preventDefault(); handleDelete(diagnosis.id) }} style={{ fontSize: '12px', color: '#b71c1c', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500 }}>Delete</button>
+                  <button onClick={(e) => { e.preventDefault(); handleDelete(diagnosis) }} style={{ fontSize: '12px', color: '#b71c1c', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 500 }}>Delete</button>
                 )}
               </div>
             </Link>
@@ -113,5 +143,15 @@ export default function HistoryPage() {
         </div>
       )}
     </div>
+
+    <ConfirmDialog
+      open={!!deleteTarget}
+      title="Delete Diagnosis"
+      message={`Are you sure you want to delete this ${deleteTarget?.severity} diagnosis${deleteTarget?.symptoms?.length ? ` for "${deleteTarget.symptoms.slice(0, 3).join(', ')}"` : ''}? This action cannot be undone.`}
+      confirmLabel={deleting ? 'Deleting...' : 'Delete'}
+      onConfirm={confirmDelete}
+      onCancel={() => { if (!deleting) setDeleteTarget(null) }}
+    />
+    </>
   )
 }

@@ -4,10 +4,10 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
-import { Shield, Plus, Clock, FileText, Users, ChevronDown, ChevronUp } from 'lucide-react'
+import { Shield, Plus, Clock, FileText, ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
 import EmptyState from '@/components/EmptyState'
-import type { AccessRequestWithUser, GuardianLinkWithUser } from '@medisync/shared'
+import type { AccessRequestWithUser } from '@medisync/shared'
 
 const DURATION_OPTIONS = [
   { value: 30, label: '30 days' },
@@ -26,10 +26,6 @@ function scopeLabel(scope: any): string {
   return parts.length ? parts.join(' · ') : 'Full history'
 }
 
-/**
- * The API serializes drizzle columns as camelCase while shared types declare
- * snake_case. Read both so neither naming breaks the UI.
- */
 function pick<T = any>(obj: any, camel: string, snake: string): T {
   return (obj?.[camel] ?? obj?.[snake]) as T
 }
@@ -38,7 +34,6 @@ export default function AccessRequestsPage() {
   const router = useRouter()
   const [user, setUser] = useState<any>(null)
   const [requests, setRequests] = useState<AccessRequestWithUser[]>([])
-  const [guardianLinks, setGuardianLinks] = useState<GuardianLinkWithUser[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [durations, setDurations] = useState<Record<string, number>>({})
@@ -52,32 +47,18 @@ export default function AccessRequestsPage() {
         setUser(authUser)
         const data = await api.getAccessRequests()
         setRequests(data)
-        try {
-          const links = await api.getGuardianLinks()
-          setGuardianLinks(links)
-        } catch {}
       } catch { router.push('/login') }
       setLoading(false)
     }
     fetchData()
   }, [router])
 
-  // Am I an active guardian of someone? Do I act for a dependent?
-  const activeGuardianships = guardianLinks.filter(l => l.status === 'active_shared_control')
-  const isGuardingSomeone = activeGuardianships.length > 0
-  // For requests on my dependents (minor / incapacity): I decide; patient cannot.
-  const guardianOnlyFor = new Set(
-    activeGuardianships
-      .filter(l => pick(l, 'triggerType', 'trigger_type') === 'minor' || pick(l, 'triggerType', 'trigger_type') === 'emergency_incapacity')
-      .map(l => String(pick(l, 'patientId', 'patient_id')))
-  )
-
   const handleApprove = async (req: AccessRequestWithUser) => {
     setActionLoading(req.id); setError('')
     try {
       const duration = durations[req.id] ?? 30
       const updated = await api.updateAccessRequest(req.id, 'approved', { duration_days: duration })
-      setRequests(prev => prev.map(r => r.id === req.id ? { ...r, ...updated, effectively_expired: false } : r))
+      setRequests(prev => prev.map(r => r.id === req.id ? { ...r, ...updated } : r))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve')
     } finally { setActionLoading(null) }
@@ -103,44 +84,33 @@ export default function AccessRequestsPage() {
     } finally { setActionLoading(null) }
   }
 
+  const handleDelete = async (id: string) => {
+    setActionLoading(id); setError('')
+    try {
+      await api.deleteAccessRequest(id)
+      setRequests(prev => prev.filter(r => r.id !== id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete')
+    } finally { setActionLoading(null) }
+  }
+
   if (loading) return <div className="min-h-screen flex items-center justify-center"><LoadingSpinner size="lg" text="Loading..." /></div>
 
   const uid = user?.id
   const isDoctor = user?.role === 'doctor'
-  // API serializes camelCase; shared types declare snake_case — read both.
-  const doctorVerified = pick(user, 'verificationStatus', 'verification_status') === 'verified'
 
-  /**
-   * Can the current user act on this request? Mirrors server-side rules:
-   *  - no guardian            -> patient decides
-   *  - minor / incapacity     -> guardian only (patient locked out)
-   *  - advance_directive      -> patient OR guardian (second consent completes dual approval)
-   */
-  const canDecide = (req: AccessRequestWithUser): boolean => {
-    if (!['pending', 'partially_approved'].includes(req.status)) return false
-    const iAmThePatient = pick(req, 'patientId', 'patient_id') === uid
-    const guardingThisPatient = activeGuardianships.some(l => String(pick(l, 'patientId', 'patient_id')) === String(pick(req, 'patientId', 'patient_id')) && String(pick(l, 'guardianId', 'guardian_id')) === uid)
-    if (guardianOnlyFor.has(String(pick(req, 'patientId', 'patient_id')))) return guardingThisPatient
-    if (iAmThePatient) return true
-    return guardingThisPatient // dual: guardian co-signs or initiates
-  }
+  // Doctor sees: requests where they are the invited doctor
+  // Patient sees: requests they created
+  const pending = requests.filter(r => r.status === 'pending' && (isDoctor ? pick(r, 'doctorId', 'doctor_id') === uid : pick(r, 'patientId', 'patient_id') === uid))
+  const others = requests.filter(r => r.status !== 'pending' && (isDoctor ? pick(r, 'doctorId', 'doctor_id') === uid : pick(r, 'patientId', 'patient_id') === uid))
 
-  const pending = requests.filter(r => ['pending', 'partially_approved'].includes(r.status))
-  const others = requests.filter(r => !['pending', 'partially_approved'].includes(r.status))
-
-  /**
-   * Full request detail — who asked, why, what was requested vs actually
-   * granted, who decided, and until when. Readable by every party to the
-   * request (doctor, patient, guardian).
-   */
   const renderDetails = (req: AccessRequestWithUser) => {
     const doctorId = pick(req, 'doctorId', 'doctor_id')
     const pid = pick(req, 'patientId', 'patient_id')
     const respondedByLabel =
       !req.responded_by ? null
-      : req.responded_by === doctorId ? 'the requesting doctor'
-      : req.responded_by === pid ? 'the patient'
-      : 'a guardian'
+      : req.responded_by === doctorId ? 'the doctor'
+      : 'the patient'
     const row = (label: string, value: React.ReactNode) => (
       <div style={{ display: 'flex', gap: '8px', fontSize: '13px' }}>
         <span style={{ color: 'var(--color-on-surface-variant)', minWidth: '150px', flexShrink: 0 }}>{label}</span>
@@ -154,29 +124,23 @@ export default function AccessRequestsPage() {
         {(pick(req, 'grantedScope', 'granted_scope')) && Object.keys(pick(req, 'grantedScope', 'granted_scope') || {}).length > 0
           ? row('Granted scope', <span style={{ color: 'var(--color-primary)' }}>{scopeLabel(pick(req, 'grantedScope', 'granted_scope'))}</span>)
           : null}
-        {req.consent_model && row('Consent model', req.consent_model === 'guardian' ? 'Guardian decides (minor / incapacity)' : req.consent_model === 'dual' ? 'Patient + guardian both required' : 'Patient decides')}
-        {req.patient_approved_at && row('Patient approval', new Date(pick(req, 'patientApprovedAt', 'patient_approved_at')).toLocaleString())}
-        {req.guardian_approved_at && row('Guardian approval', new Date(pick(req, 'guardianApprovedAt', 'guardian_approved_at')).toLocaleString())}
-        {respondedByLabel && row('Last decision by', `${respondedByLabel} · ${new Date(pick(req, 'respondedAt', 'responded_at')).toLocaleString()}`)}
+        {respondedByLabel && row('Decided by', `${respondedByLabel} · ${new Date(pick(req, 'respondedAt', 'responded_at')).toLocaleString()}`)}
         {req.expires_at && row(
           'Access expires',
           req.effectively_expired
-            ? <span style={{ color: '#b71c1c' }}>Expired {new Date(req.expires_at).toLocaleString()} — access revoked automatically</span>
+            ? <span style={{ color: '#b71c1c' }}>Expired {new Date(req.expires_at).toLocaleString()}</span>
             : new Date(req.expires_at).toLocaleString()
         )}
         {row('Created', pick(req, 'createdAt', 'created_at') ? new Date(pick(req, 'createdAt', 'created_at')).toLocaleString() : '—')}
-        {isDoctor &&
-          pick(req, 'doctorId', 'doctor_id') === uid &&
-          req.status === 'approved' &&
-          !req.effectively_expired && (
-            row(
-              'Patient chart',
-              <span style={{ display: 'inline-flex', gap: '12px' }}>
-                <Link href={`/dashboard/records?patient=${pid}`} style={{ color: 'var(--color-primary)', fontWeight: 600 }}>Open medical records →</Link>
-                <Link href={`/dashboard/history?patient=${pid}`} style={{ color: 'var(--color-primary)', fontWeight: 600 }}>Open diagnosis history →</Link>
-              </span>
-            )
-          )}
+        {isDoctor && req.status === 'approved' && !req.effectively_expired && (
+          row(
+            'Patient chart',
+            <span style={{ display: 'inline-flex', gap: '12px' }}>
+              <Link href={`/dashboard/records?patient=${pid}`} style={{ color: 'var(--color-primary)', fontWeight: 600 }}>Medical records →</Link>
+              <Link href={`/dashboard/history?patient=${pid}`} style={{ color: 'var(--color-primary)', fontWeight: 600 }}>Diagnosis history →</Link>
+            </span>
+          )
+        )}
       </div>
     )
   }
@@ -185,11 +149,10 @@ export default function AccessRequestsPage() {
 
   const renderRequestCard = (req: AccessRequestWithUser) => {
     const counterpart = isDoctor
-      ? (req.patient_name || req.patient_email || 'Unknown patient')
-      : `${req.doctor_name || req.doctor_email || 'Unknown doctor'}`
-    const iAmGuardianApprover = !isDoctor && !guardianOnlyFor.has(String(pick(req, 'patientId', 'patient_id'))) &&
-      activeGuardianships.some(l => String(pick(l, 'patientId', 'patient_id')) === String(pick(req, 'patientId', 'patient_id')))
+      ? (req.patient_name || req.patientName || req.patient_email || req.patientEmail || 'Unknown patient')
+      : (req.doctor_name || req.doctorName || req.doctor_email || req.doctorEmail || 'Unknown doctor')
     const expanded = expandedId === req.id
+    const canRevoke = !isDoctor && ['pending', 'approved'].includes(req.status)
 
     return (
       <div key={req.id} className="glass-card" style={{ padding: '20px' }}>
@@ -204,16 +167,11 @@ export default function AccessRequestsPage() {
             <p style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)', marginTop: '4px' }}>
               Requested scope: {scopeLabel(req.scope)}
             </p>
-            {req.status === 'partially_approved' && (
-              <p style={{ fontSize: '13px', marginTop: '4px', color: '#b45309', fontWeight: 500 }}>
-                Dual consent: waiting for {(pick(req, 'patientApprovedAt', 'patient_approved_at') && !pick(req, 'guardianApprovedAt', 'guardian_approved_at')) ? 'guardian' : 'patient'} to also approve.
-              </p>
-            )}
           </div>
 
-          {canDecide(req) && (
+          {/* Doctor: approve/deny buttons for pending requests */}
+          {isDoctor && req.status === 'pending' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
-              {!guardianOnlyFor.has(String(pick(req, 'patientId', 'patient_id'))) && pick(req, 'patientId', 'patient_id') === uid && !iAmGuardianApprover && null}
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <label style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Clock size={13} /> Grant for
@@ -227,25 +185,26 @@ export default function AccessRequestsPage() {
                   </select>
                 </label>
                 <button onClick={() => handleApprove(req)} disabled={actionLoading === req.id} className="btn-success" style={{ padding: '8px 16px', fontSize: '13px' }}>
-                  {req.status === 'partially_approved' ? 'Final Approve' : 'Approve'}
+                  Approve
                 </button>
                 <button onClick={() => handleDeny(req.id)} disabled={actionLoading === req.id} className="btn-danger" style={{ padding: '8px 16px', fontSize: '13px' }}>Deny</button>
               </div>
-              {guardianOnlyFor.has(String(pick(req, 'patientId', 'patient_id'))) && (
-                <span style={{ fontSize: '11px', color: 'var(--color-on-surface-variant)', display: 'flex', gap: '4px', alignItems: 'center' }}>
-                  <Users size={12} /> You approve as guardian of this dependent
-                </span>
-              )}
             </div>
           )}
 
-          {/* Patient sees "awaiting guardian" when they cannot self-consent */}
-          {!canDecide(req) && ['pending'].includes(req.status) && pick(req, 'patientId', 'patient_id') === uid && guardianOnlyFor.has(String(pick(req, 'patientId', 'patient_id'))) && (
-            <span style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', alignSelf: 'center' }}>Awaiting your guardian's decision</span>
+          {/* Doctor: quick links for approved requests */}
+          {isDoctor && req.status === 'approved' && !req.effectively_expired && (
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <Link href={`/dashboard/records?patient=${pick(req, 'patientId', 'patient_id')}`} style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-primary)' }}>Records →</Link>
+              <Link href={`/dashboard/history?patient=${pick(req, 'patientId', 'patient_id')}`} style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-primary)' }}>History →</Link>
+            </div>
           )}
-          {/* Doctor sees partial state */}
-          {isDoctor && req.status === 'partially_approved' && (
-            <span style={{ fontSize: '12px', color: '#b45309', alignSelf: 'center', fontWeight: 500 }}>Awaiting second consent</span>
+
+          {/* Patient: revoke button */}
+          {canRevoke && (
+            <button onClick={() => handleRevoke(req.id)} disabled={actionLoading === req.id} style={{ fontSize: '12px', color: '#b71c1c', background: 'none', border: 'none', cursor: 'pointer', alignSelf: 'center' }}>
+              Revoke
+            </button>
           )}
         </div>
 
@@ -263,13 +222,8 @@ export default function AccessRequestsPage() {
 
   const renderHistoryRow = (req: AccessRequestWithUser) => {
     const counterpart = isDoctor
-      ? (req.patient_name || req.patient_email || 'Unknown patient')
-      : `${req.doctor_name || req.doctor_email || 'Unknown doctor'}`
-    const canRevoke =
-      (['approved', 'pending', 'partially_approved'].includes(req.status)) &&
-      (pick(req, 'doctorId', 'doctor_id') === uid || pick(req, 'patientId', 'patient_id') === uid ||
-        activeGuardianships.some(l => String(pick(l, 'patientId', 'patient_id')) === String(pick(req, 'patientId', 'patient_id'))))
-
+      ? (req.patient_name || req.patientName || req.patient_email || req.patientEmail || 'Unknown patient')
+      : (req.doctor_name || req.doctorName || req.doctor_email || req.doctorEmail || 'Unknown doctor')
     const expanded = expandedId === req.id
 
     return (
@@ -281,25 +235,25 @@ export default function AccessRequestsPage() {
               <p style={{ fontSize: '12px', color: req.effectively_expired ? '#b71c1c' : 'var(--color-on-surface-variant)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <Clock size={12} />
                 {req.effectively_expired
-                  ? `Expired ${new Date(req.expires_at).toLocaleDateString()} — access revoked automatically`
+                  ? `Expired ${new Date(req.expires_at).toLocaleDateString()}`
                   : `Access expires ${new Date(req.expires_at).toLocaleString()}`}
               </p>
             )}
-            {req.granted_scope && Object.keys(req.granted_scope).length > 0 && (
-              <p style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)' }}>Granted scope: {scopeLabel(req.granted_scope)}</p>
-            )}
           </div>
           <div className="flex items-center gap-3">
-            {isDoctor && pick(req, 'doctorId', 'doctor_id') === uid && req.status === 'approved' && !req.effectively_expired && (
+            {isDoctor && req.status === 'approved' && !req.effectively_expired && (
               <>
                 <Link href={`/dashboard/records?patient=${pick(req, 'patientId', 'patient_id')}`} style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-primary)' }}>Records</Link>
                 <Link href={`/dashboard/history?patient=${pick(req, 'patientId', 'patient_id')}`} style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-primary)' }}>History</Link>
               </>
             )}
             <span className={`badge badge-${req.status}`}>{req.effectively_expired ? 'expired' : req.status}</span>
-            {req.status === 'approved' && canRevoke && (
-              <button onClick={() => handleRevoke(req.id)} disabled={actionLoading === req.id} style={{ fontSize: '12px', color: '#b71c1c', background: 'none', border: 'none', cursor: 'pointer' }}>Revoke</button>
-            )}
+            <button onClick={() => handleDelete(req.id)} disabled={actionLoading === req.id} title="Remove from history"
+              style={{ display: 'flex', alignItems: 'center', padding: '4px', color: 'var(--color-on-surface-variant)', background: 'none', border: 'none', cursor: 'pointer', borderRadius: '6px' }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = '#b71c1c')}
+              onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-on-surface-variant)')}>
+              <Trash2 size={14} />
+            </button>
             <button onClick={() => toggleDetails(req.id)} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', fontWeight: 600, color: 'var(--color-primary)', background: 'none', border: 'none', cursor: 'pointer' }}>
               {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               Details
@@ -318,32 +272,30 @@ export default function AccessRequestsPage() {
         <div>
           <h1 style={{ fontSize: '32px', fontWeight: 700, marginBottom: '8px' }}>
             <Shield size={22} style={{ verticalAlign: 'middle', marginRight: '8px', color: 'var(--color-primary)' }} />
-            Access Requests
+            {isDoctor ? 'Patient Requests' : 'Access Requests'}
           </h1>
-          <p style={{ fontSize: '15px', color: 'var(--color-on-surface-variant)' }}>{requests.length} total requests</p>
+          <p style={{ fontSize: '15px', color: 'var(--color-on-surface-variant)' }}>
+            {isDoctor
+              ? `${pending.length} pending · ${others.length} resolved`
+              : `${requests.length} total requests`}
+          </p>
         </div>
-        {isDoctor && (
-          doctorVerified ? (
-            <Link href="/dashboard/access-requests/new" className="btn-primary" style={{ padding: '12px 24px', fontSize: '14px' }}>
-              <Plus size={18} /> Request Access
-            </Link>
-          ) : (
-            <span style={{ fontSize: '13px', padding: '10px 16px', background: 'var(--color-surface-variant, #f3f0ff)', borderRadius: '12px', color: 'var(--color-on-surface-variant)' }}>
-              Credentials pending verification — requesting is locked
-            </span>
-          )
+        {!isDoctor && (
+          <Link href="/dashboard/access-requests/new" className="btn-primary" style={{ padding: '12px 24px', fontSize: '14px' }}>
+            <Plus size={18} /> Request Access
+          </Link>
         )}
       </div>
 
       {error && <div style={{ padding: '12px 16px', marginBottom: '20px', background: 'var(--color-error-container)', borderRadius: '12px', fontSize: '13px' }}>{error}</div>}
 
       {requests.length === 0 ? (
-        <EmptyState icon="shield" title="No access requests" description="Access requests will appear here when doctors request patient data access." />
+        <EmptyState icon="shield" title="No access requests" description={isDoctor ? "No patients have invited you yet." : "You haven't invited any doctors yet."} />
       ) : (
         <>
           {pending.length > 0 && (
             <div style={{ marginBottom: '32px' }}>
-              <h2 style={{ fontSize: '18px', fontWeight: 600, marginBottom: '16px' }}>Pending</h2>
+              <h2 style={{ fontSize: '18px', fontWeight: 600, marginBottom: '16px' }}>{isDoctor ? 'Pending Requests' : 'Sent Requests'}</h2>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                 {pending.map(renderRequestCard)}
               </div>

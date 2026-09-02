@@ -7,14 +7,7 @@ export const users = pgTable("users", {
   username: text("username").unique(),
   passwordHash: text("password_hash").notNull(),
   role: text("role").default("patient").notNull(),
-  /**
-   * Doctor credentialing status (D1): null for patients/admins; doctors carry
-   * "pending_verification" | "verified" | "rejected". Doctor privileges
-   * (access requests, emergency access) require "verified" — signup alone
-   * never grants clinical authority.
-   */
   verificationStatus: text("verification_status"),
-  /** Incremented on password change/reset — session tokens embed this value and are rejected when stale. */
   tokenVersion: integer("token_version").default(0).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
@@ -28,9 +21,38 @@ export const profiles = pgTable("profiles", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
+/**
+ * Patient profiles — supports multi-profile / guardian-dependent architecture.
+ * Each user (guardian) can have multiple profiles: SELF, CHILD, PARENT, SPOUSE, OTHER.
+ * All medical data (diagnoses, records) is tied to a profile_id, NOT the user_id.
+ */
+export const patientProfiles = pgTable(
+  "patient_profiles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    guardianUserId: uuid("guardian_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    fullName: text("full_name").notNull(),
+    relationship: text("relationship").notNull().default("SELF"),
+    dateOfBirth: date("date_of_birth").notNull(),
+    biologicalSex: text("biological_sex").notNull(),
+    bloodGroup: text("blood_group"),
+    allergies: jsonb("allergies").default([]),
+    avatarUrl: text("avatar_url"),
+    isDefault: integer("is_default").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("one_default_profile_per_guardian")
+      .on(table.guardianUserId)
+      .where(sql`${table.isDefault} = 1`),
+  ]
+);
+
 export const diagnoses = pgTable("diagnoses", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: text("user_id").notNull(),
+  profileId: uuid("profile_id").references(() => patientProfiles.id, { onDelete: "set null" }),
   patientName: text("patient_name").notNull(),
   age: integer("age").notNull(),
   gender: text("gender").notNull(),
@@ -49,6 +71,7 @@ export const diagnoses = pgTable("diagnoses", {
 export const records = pgTable("records", {
   id: uuid("id").primaryKey().defaultRandom(),
   patientId: uuid("patient_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  profileId: uuid("profile_id").references(() => patientProfiles.id, { onDelete: "set null" }),
   type: text("type").notNull(),
   date: date("date").notNull(),
   doctorName: text("doctor_name"),
@@ -86,6 +109,8 @@ export const accessRequests = pgTable(
     respondedAt: timestamp("responded_at", { withTimezone: true }),
     /** Grant expiry (D2) — set on approval; null while pending/denied. Access dies when this passes. */
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Which patient profiles the doctor can access. Empty/null = all profiles. */
+    profileIds: jsonb("profile_ids").$type<string[]>().default([]),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },

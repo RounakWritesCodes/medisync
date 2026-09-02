@@ -97,10 +97,21 @@ def _build_condition_summary(condition: dict[str, Any]) -> str:
             f"{_human_list(unexplained[:4])}."
         )
 
-    parts.append(
-        "The relevance score reflects similarity to the reported "
-        "features and is not the probability of having this disease."
-    )
+    # Add probability information if available
+    probability = condition.get("probability")
+    confidence = condition.get("confidence")
+
+    if probability is not None and confidence is not None:
+        prob_percent = round(probability * 100, 1)
+        parts.append(
+            f"Bayesian probability estimate: {prob_percent}% "
+            f"(confidence: {confidence})."
+        )
+    else:
+        parts.append(
+            "The relevance score reflects similarity to the reported "
+            "features and is not the probability of having this disease."
+        )
 
     return " ".join(parts)
 
@@ -620,21 +631,33 @@ def build_differential_summary(
         if not name:
             continue
 
-        label = condition.get("relevance_label", "weak")
-
-        if label == "strong":
-            strong.append(name)
-        elif label == "moderate":
-            moderate.append(name)
+        # Use probability-based labels
+        probability = condition.get("probability")
+        if probability is not None:
+            prob_percent = round(probability * 100, 1)
+            if probability >= 0.25:
+                strong.append(f"{name} ({prob_percent}%)")
+            elif probability >= 0.10:
+                moderate.append(f"{name} ({prob_percent}%)")
+            else:
+                weak.append(f"{name} ({prob_percent}%)")
         else:
-            weak.append(name)
+            # Fallback to relevance_label
+            label = condition.get("relevance_label", "weak")
+            if label == "strong":
+                strong.append(name)
+            elif label == "moderate":
+                moderate.append(name)
+            else:
+                weak.append(name)
 
     return {
         "strong_relevance": strong,
         "moderate_relevance": moderate,
         "weak_relevance": weak,
         "interpretation": (
-            "Relevance groups summarize similarity to the reported "
-            "features. They are not disease probabilities."
+            "Probabilities represent statistical likelihood "
+            "based on symptom patterns and disease prevalence. "
+            "They are decision support information, not confirmed diagnoses."
         ),
     }
